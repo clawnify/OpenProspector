@@ -12,14 +12,28 @@
 -- results attributed to providers we have not shipped would be advertising a
 -- capability that does not exist.
 
-DELETE FROM enrichment_attempts WHERE run_id = '11111111-1111-4111-8111-111111111111';
+DELETE FROM enrichment_attempts WHERE run_id LIKE '_______1-1111-4111-8111-111111111111'
+   OR run_id IN ('22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333');
 DELETE FROM leads WHERE run_id = '11111111-1111-4111-8111-111111111111';
-DELETE FROM runs WHERE id = '11111111-1111-4111-8111-111111111111';
+DELETE FROM runs WHERE id IN (
+  '11111111-1111-4111-8111-111111111111',
+  '22222222-2222-4222-8222-222222222222',
+  '33333333-3333-4333-8333-333333333333');
 
-INSERT INTO runs (id, icp_prompt, status, lead_count, credits_spent) VALUES
+-- Three runs so the Searches panel shows its whole vocabulary: a finished run,
+-- one the agent is still working, and one it gave up on with a reason. A demo
+-- where everything succeeded misrepresents what sourcing actually looks like.
+INSERT INTO runs (id, icp_prompt, status, lead_count, credits_spent, error, updated_at) VALUES
   ('11111111-1111-4111-8111-111111111111',
    '[sample] Series A fintech companies in Amsterdam that just hired a Head of Compliance',
-   'done', 14, 9);
+   'done', 14, 9, '', datetime('now')),
+  -- Fresh, so it reads "Sourcing" rather than tripping the 15-minute staleness rule.
+  ('22222222-2222-4222-8222-222222222222',
+   '[sample] Dutch accounting firms with 10-50 staff that mention AI on their site',
+   'sourcing', 0, 0, '', datetime('now')),
+  ('33333333-3333-4333-8333-333333333333',
+   '[sample] Series B logistics startups hiring a Head of Ops in the Nordics',
+   'failed', 0, 0, 'No job boards returned matches for the Nordics filter', datetime('now'));
 
 INSERT INTO leads (
   id, run_id, full_name, title, company, domain, location,
