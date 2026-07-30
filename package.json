@@ -1,0 +1,37 @@
+{
+  "name": "open-prospector",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler d1 execute open-prospector-db --local --file=src/server/schema.sql && concurrently -n ui,api -c cyan,green \"vite\" \"wrangler dev --port 8789\"",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql"
+  },
+  "dependencies": {
+    "@clawnify/app": "^0.1.0",
+    "@clawnify/connections": "^0.3.0",
+    "@clawnify/db": "^0.4.1",
+    "@clawnify/queue": "^0.1.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "hono": "^4.6.0",
+    "lucide-react": "^0.469.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.18.1",
+    "tailwindcss": "^4.2.2",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.0.0"
+  }
+}

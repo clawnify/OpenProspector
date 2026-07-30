@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-link: var(--link);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--on-primary);
+  --color-success: var(--success);
+  --color-success-tint: var(--success-tint);
+  --color-warning: var(--warning);
+  --color-warning-tint: var(--warning-tint);
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+
+  /* Explicit four-step radius scale: atoms 4px, containers 8px, modals 12px. */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+}
+
+:root {
+  --background: #ffffff;
+  --surface: #ffffff;
+  --sunken: #f1f5f9;
+  --foreground: #1a202c;
+  --muted: #475569;
+  --faint: #94a3b8;
+  --border: #e2e8f0;
+  --ring: #2563eb;
+  --link: #2563eb;
+  --primary: #dd5164; /* the one coral CTA per screen */
+  --primary-hover: #c53a4e;
+  --on-primary: #ffffff;
+  --success: #047857;
+  --success-tint: #ecfdf5;
+  --warning: #b45309;
+  --warning-tint: #fffbeb;
+  --danger: #b91c1c;
+  --danger-tint: #fef2f2;
+}
+
+/* GitHub-dim rather than pure black — easier for all-day tools. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0d1117;
+    --surface: #161b22;
+    --sunken: #1c2128;
+    --foreground: #e6edf3;
+    --muted: #9ba7b3;
+    --faint: #6e7681;
+    --border: #30363d;
+    --ring: #4493f8;
+    --link: #4493f8;
+    --primary: #dd5164; /* coral holds on the dark canvas — no inversion */
+    --primary-hover: #c53a4e;
+    --success: #3fb950;
+    --success-tint: #12261e;
+    --warning: #d29922;
+    --warning-tint: #2a2210;
+    --danger: #f85149;
+    --danger-tint: #2d1518;
+  }
+}
+
+@layer base {
+  html {
+    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Numbers are instrumentation: tabular figures so digits and totals stack. */
+  .data {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  /* Every card zone opens with one of these — the highest-leverage move in the
+     system, and what separates a sectioned card from a padded blob. */
+  .eyebrow {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}

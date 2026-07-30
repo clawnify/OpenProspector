@@ -1,0 +1,5 @@
+# Copy to .dev.vars and fill in. Never commit .dev.vars.
+# Each provider is optional — the waterfall skips any vendor with no key and
+# records "unconfigured" in the attempt ledger so you can see the gap.
+
+FINDYMAIL_API_KEY=
