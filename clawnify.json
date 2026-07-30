@@ -6,6 +6,11 @@
     "framework": "react+hono",
     "database": true
   },
+  "api": {
+    "public_routes": [
+      { "path": "/api/jobs/enrich", "methods": ["POST"] }
+    ]
+  },
   "env": {
     "optional": ["FINDYMAIL_API_KEY"]
   }

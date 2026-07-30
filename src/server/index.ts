@@ -115,9 +115,17 @@ type AttemptRow = z.infer<typeof AttemptSchema>;
  */
 const STALE_AFTER = "-15 minutes";
 
-/** Every runs read goes through this so `stale` can never drift between routes. */
+/**
+ * Every runs read goes through this so `stale` can never drift between routes.
+ *
+ * Covers `enriching` as well as `sourcing`: a queued enrichment that never got
+ * delivered leaves the run mid-flight with nothing to report the failure, which
+ * looked identical to one still working. Both in-flight states now have a clock.
+ * The enrich job heartbeats `updated_at` per batch so a long, healthy run is
+ * never mistaken for a dead one.
+ */
 const RUN_SELECT =
-  `*, (CASE WHEN status = 'sourcing' AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
+  `*, (CASE WHEN status IN ('sourcing', 'enriching') AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
 
 const FIELDS: EnrichField[] = ["email", "phone"];
 
@@ -762,8 +770,8 @@ const startEnrich = createRoute({
 
 app.openapi(startEnrich, async (c) => {
   const runId = c.req.valid("param").id;
-  const exists = await get("SELECT id FROM runs WHERE id = ?", [runId]);
-  if (!exists) return c.json({ error: "Run not found" }, 404);
+  const existing = await get<{ updated_at: string }>("SELECT updated_at FROM runs WHERE id = ?", [runId]);
+  if (!existing) return c.json({ error: "Run not found" }, 404);
 
   const pendingRow = await get<{ n: number }>(
     "SELECT COUNT(*) AS n FROM leads WHERE run_id = ? AND enrich_status = 'pending'",
@@ -772,12 +780,22 @@ app.openapi(startEnrich, async (c) => {
   const pending = pendingRow?.n || 0;
   if (pending === 0) return c.json({ queued: false, pending: 0 }, 202);
 
+  // Attempt token, same reasoning as the agent dispatch above. The queue's
+  // idempotency key returns the EXISTING job on a repeat — so a key of
+  // `enrich:<run>:0` made a run's enrichment enqueueable exactly once ever: any
+  // job that failed to deliver left the run unretryable, silently, because the
+  // retry got handed back the dead job and still answered 202. The run's
+  // updated_at changes on every state transition, so a double-click reuses the
+  // token (deduped, correctly) while a real retry gets a fresh one. It travels
+  // in the payload so the batch chain stays unique within one attempt.
+  const attempt = existing.updated_at;
+
   try {
     await enqueueJob(c.env, {
       // The app's own origin — no configured base URL to drift from reality.
       targetUrl: `${new URL(c.req.url).origin}/api/jobs/enrich`,
-      payload: { runId, batch: 0 },
-      idempotencyKey: `enrich:${runId}:0`,
+      payload: { runId, batch: 0, attempt },
+      idempotencyKey: `enrich:${runId}:${attempt}:0`,
       maxAttempts: 3,
     });
   } catch (err) {
@@ -798,6 +816,14 @@ app.openapi(startEnrich, async (c) => {
  * Declared with app.post rather than app.openapi deliberately — it is a
  * machine-to-machine callback, not part of the app's public API surface, and
  * publishing it in discovery would just invite the managing agent to call it.
+ *
+ * It IS listed in `clawnify.json` under `app.api.public_routes`, and must be:
+ * the queue delivers from outside the platform perimeter, which 403s every
+ * unauthenticated request. Without that entry the job never arrives, every run
+ * sits in `enriching` forever, and nothing anywhere reports an error — the
+ * enqueue succeeded, so the app has no idea delivery failed. "Public" here means
+ * reachable, not unauthenticated: verifyDelivery below rejects anything without
+ * a valid queue signature, which is the only reason exposing it is safe.
  */
 app.post("/api/jobs/enrich", async (c) => {
   const rawBody = await c.req.text();
@@ -808,14 +834,17 @@ app.post("/api/jobs/enrich", async (c) => {
   });
   if (!ok) return c.json({ error: "Invalid delivery signature" }, 401);
 
-  let payload: { runId?: string; batch?: number };
+  let payload: { runId?: string; batch?: number; attempt?: string };
   try {
-    payload = JSON.parse(rawBody) as { runId?: string; batch?: number };
+    payload = JSON.parse(rawBody) as { runId?: string; batch?: number; attempt?: string };
   } catch {
     return c.json({ error: "Malformed payload" }, 400);
   }
   const runId = payload.runId;
   const batch = Number(payload.batch ?? 0);
+  // Carried from the enqueue so every batch in one attempt shares a namespace,
+  // and a later retry of the whole run can't collide with this attempt's chain.
+  const attempt = String(payload.attempt ?? "0");
   if (!runId) return c.json({ error: "Missing runId" }, 400);
 
   const leads = await query<Record<string, unknown>>(
@@ -856,13 +885,18 @@ app.post("/api/jobs/enrich", async (c) => {
     await run(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`, [...params, id]);
   }
 
+  // Heartbeat. A large run is many batches, none of which otherwise touch the
+  // run row — without this the staleness clock would fire mid-enrichment and
+  // report a healthy job as dead.
+  await run("UPDATE runs SET updated_at = datetime('now') WHERE id = ?", [runId]);
+
   // Chain the next slice. A distinct key per batch keeps redelivery of *this*
   // job from spawning duplicate successors.
   try {
     await enqueueJob(c.env, {
       targetUrl: `${new URL(c.req.url).origin}/api/jobs/enrich`,
-      payload: { runId, batch: batch + 1 },
-      idempotencyKey: `enrich:${runId}:${batch + 1}`,
+      payload: { runId, batch: batch + 1, attempt },
+      idempotencyKey: `enrich:${runId}:${attempt}:${batch + 1}`,
       maxAttempts: 3,
     });
   } catch (err) {
