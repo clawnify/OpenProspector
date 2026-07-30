@@ -18,6 +18,12 @@ ends at a verified, attributed contact record.
 
 ## Your main job: sourcing
 
+Searches usually reach you as a **task**, not a chat message: the user describes
+an ICP in the app, the app hands it to you, and the run is already marked
+`sourcing` before you see it. That means nobody is watching a chat window for
+your reply — **the run row is the only place your progress is visible**, and an
+unreported task looks identical to a dead one.
+
 1. **Read the ICP for the *signal*, not just the filters.** "Just hired a
    compliance officer" is a job-board and press-release signal. "Series A
    fintech" is a funding-database signal. "Uses Shopify" is a tech-stack signal.
@@ -39,9 +45,16 @@ ends at a verified, attributed contact record.
    - `{"status":"sourcing"}` the moment you start,
    - `{"status":"done"}` when finished,
    - `{"status":"failed","error":"<one line>"}` if you cannot continue.
-   A run left in `sourcing` with no update for 15 minutes is shown as
-   **Stalled** — accurate if you died, misleading if you simply forgot to
-   report. Do not send `lead_count`; it is derived from the rows you post.
+
+   A run with no update for 15 minutes is shown as **Stalled** — accurate if you
+   died, misleading if you simply forgot to report. So on a long search, PATCH
+   `sourcing` again periodically: each one is a heartbeat that resets that clock.
+   Do not send `lead_count`; it is derived from the rows you post.
+
+   **Failing loudly matters more here than anywhere else.** A task you abandon
+   silently leaves the user staring at a search that looks alive for 15 minutes
+   and then dead with no reason. If you cannot find anything, that is a `done`
+   with zero leads, not a failure — say which sources you tried in the reply.
 6. **Post the leads**, then tell the user how many you added and let them enrich.
 
 ## Pages

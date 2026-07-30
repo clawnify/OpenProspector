@@ -6,6 +6,7 @@ import { d1Cache, recordAttempts, runCredits } from "./cache.js";
 import { REGISTRY, runWaterfall, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
 import { plannedForField } from "./providers/planned.js";
 import { EXPORT_COLUMNS, toCsv, checkDestination, safeHeaders, pushVerdict } from "./export.js";
+import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
 import type { EnrichField, LeadInput } from "./providers/types.js";
 
 type Env = {
@@ -13,8 +14,10 @@ type Env = {
     DB: D1Database;
     CREDENTIALS?: CredentialBinding;
     CLAWNIFY_ORG_ID?: string;
-    /** Minted per org by the platform; required by the queue service. */
+    /** Minted per org by the platform; required by the queue and agent services. */
     CLAWNIFY_TOKEN?: string;
+    /** Override the platform agent endpoint — local testing only. */
+    CLAWNIFY_AGENTS_URL?: string;
     /** Vendor keys arrive as injected secrets, read via secret() in the adapters. */
     FINDYMAIL_API_KEY?: string;
   };
@@ -303,7 +306,14 @@ const createRun = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            icp_prompt: z.string().min(3).openapi({ description: "Natural-language ideal-customer profile, or a domain to model" }),
+            // Bounded so the sourcing brief built from it always fits inside the
+            // platform's 4000-character instruction cap — an ICP that silently
+            // got truncated on the way to the agent is worse than one refused.
+            icp_prompt: z
+              .string()
+              .min(3)
+              .max(2000)
+              .openapi({ description: "Natural-language ideal-customer profile, or a domain to model" }),
           }),
         },
       },
@@ -432,6 +442,109 @@ app.openapi(patchRun, async (c) => {
 
   const updated = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, id]))!;
   return c.json({ run: updated }, 200);
+});
+
+// ── Agent handoff ───────────────────────────────────────────────────
+//
+// Sourcing runs on the org's agent, not in this app: it needs judgment, a real
+// browser, and minutes of runtime. These routes are the handoff.
+//
+// They are deliberately NOT on the OpenAPI surface. The agent is the *target* of
+// a dispatch, so publishing `/dispatch` would let it hand work to itself — a
+// loop the app would have no way to break — and every published route costs
+// context in every agent turn. The agent's side of this contract is the two
+// routes it already has: PATCH /api/runs/{id} and POST /api/leads.
+
+/** The chosen agent, or null to let the platform resolve a single-agent org. */
+async function configuredServerId(): Promise<string | null> {
+  const row = await get<{ server_id: string }>("SELECT server_id FROM agent_config WHERE id = 1");
+  return row?.server_id || null;
+}
+
+app.get("/api/agent", async (c) => {
+  const servers = await listAgentServers(c.env);
+  return c.json({
+    // Distinct on purpose: "this deployment has no platform token" (off-platform)
+    // is a different problem from "the platform didn't answer" (transient).
+    available: dispatchAvailable(c.env),
+    reachable: servers !== null,
+    server_id: await configuredServerId(),
+    servers: servers ?? [],
+  });
+});
+
+app.put("/api/agent", async (c) => {
+  let body: { server_id?: unknown };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: "Invalid JSON" }, 400);
+  }
+  const wanted = typeof body.server_id === "string" ? body.server_id.trim() : "";
+
+  // Validated against the live list rather than stored blind: a mistyped or
+  // decommissioned id would otherwise wedge every future dispatch behind a
+  // platform 404 the user has no way to interpret.
+  if (wanted) {
+    const servers = await listAgentServers(c.env);
+    if (servers === null) return c.json({ error: "Can't reach the platform to verify that agent." }, 503);
+    if (!servers.some((s) => s.id === wanted)) return c.json({ error: "That agent isn't in your organization." }, 400);
+  }
+
+  await run(
+    `INSERT INTO agent_config (id, server_id, updated_at) VALUES (1, ?, datetime('now'))
+     ON CONFLICT(id) DO UPDATE SET server_id = excluded.server_id, updated_at = excluded.updated_at`,
+    [wanted],
+  );
+  return c.json({ server_id: wanted || null });
+});
+
+/**
+ * Hand a run to the agent.
+ *
+ * Kept separate from run creation deliberately: the run is a durable record the
+ * moment the user describes an ICP, and a dispatch failure must not erase it.
+ * The same call then serves as the retry for a run whose agent died mid-task.
+ */
+app.post("/api/runs/:id/dispatch", async (c) => {
+  const runId = c.req.param("id");
+  const row = await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, runId]);
+  if (!row) return c.json({ error: "Run not found" }, 404);
+
+  // Refuse to dispatch work already in flight. A *stalled* sourcing run falls
+  // through on purpose — that is exactly the case worth retrying.
+  if ((row.status === "sourcing" && !row.stale) || row.status === "enriching") {
+    return c.json({ error: "This search is already running." }, 409);
+  }
+  if (row.status === "done") return c.json({ error: "This search has already finished." }, 409);
+
+  const brief = sourcingBrief({ runId, prompt: row.icp_prompt, appUrl: new URL(c.req.url).origin });
+
+  // Idempotency key = run id + the row's current updated_at. A double-click
+  // carries the same key (nothing has changed yet) so the platform delivers
+  // once; a genuine retry later carries a different one, because a successful
+  // dispatch bumps updated_at. Keying on the run id alone would look safer and
+  // silently swallow every retry for 24 hours — the worse failure.
+  const result = await dispatchTask(c.env, {
+    instruction: brief,
+    serverId: await configuredServerId(),
+    idempotencyKey: `${runId}:${row.updated_at}`,
+  });
+
+  if (!result.ok) {
+    // updated_at is deliberately NOT bumped here: nothing was delivered, so a
+    // failed retry must not reset the staleness clock on the original attempt.
+    // The platform records its idempotency key only after a successful
+    // dispatch, so retrying with the unchanged key still goes through.
+    await run("UPDATE runs SET error = ? WHERE id = ?", [result.error.slice(0, 2000), runId]);
+    return c.json({ error: result.error, brief, servers: result.servers ?? [] }, 502);
+  }
+
+  await run("UPDATE runs SET status = 'sourcing', error = '', updated_at = datetime('now') WHERE id = ?", [runId]);
+  return c.json(
+    { dispatched: true, task_id: result.taskId, server_id: result.serverId, duplicate: result.duplicate },
+    202,
+  );
 });
 
 // ── Leads ───────────────────────────────────────────────────────────

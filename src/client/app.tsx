@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes } from "react-router-dom";
-import { ArrowUp, Check, Copy, Settings as SettingsIcon, Upload } from "lucide-react";
-import { api, type Lead, type Provider, type Run } from "./api";
+import { ArrowUp, Check, Copy, RefreshCw, Settings as SettingsIcon, Upload } from "lucide-react";
+import { api, ApiError, type Lead, type Provider, type Run } from "./api";
 import { Badge, Button, Card, Eyebrow, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
 import { RunsPanel } from "./components/runs-panel";
@@ -53,7 +53,10 @@ export function App() {
   const [icp, setIcp] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
-  const [handoff, setHandoff] = useState<string | null>(null);
+  const [dispatching, setDispatching] = useState(false);
+  // Only set when dispatch failed: the brief the user can hand over by hand,
+  // plus the run to retry against.
+  const [handoff, setHandoff] = useState<{ runId: string; brief: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   const loadProviders = useCallback(async () => {
@@ -139,37 +142,45 @@ export function App() {
   }
 
   /**
-   * Sourcing runs on the org's agent, not in this app: it needs a real browser,
-   * live sessions, and minutes of runtime. So the run is created here and the
-   * work is handed over as an instruction rather than pretended to be started.
+   * Hand a run to the agent. Sourcing needs a real browser and minutes of
+   * runtime, so the app delegates it rather than running it here — but the run
+   * row exists either way, which is what makes a failed dispatch retryable
+   * instead of lost.
    */
-  function handoffBrief(runId: string, prompt: string) {
-    return [
-      `Find leads matching this ICP and add them to Open Prospector:`,
-      ``,
-      `"${prompt}"`,
-      ``,
-      `Research the live web — maps and review sites for local businesses, job`,
-      `boards for hiring signals, funding news and company blogs for growth`,
-      `signals, professional profiles for the people themselves.`,
-      ``,
-      `For every lead include full_name, company, and the bare domain, plus`,
-      `evidence (one line on why they qualify) and source_url.`,
-      ``,
-      `Then POST them to /api/leads with run_id "${runId}".`,
-    ].join("\n");
-  }
+  const dispatch = useCallback(
+    async (runId: string) => {
+      setDispatching(true);
+      try {
+        await api.dispatchRun(runId);
+        setHandoff(null);
+        setNotice({ tone: "success", text: "Handed to your agent — progress shows up here as it works." });
+      } catch (e) {
+        // The brief comes back with the error so the user can still get the work
+        // done by pasting it into chat. A dispatch this app can't make is a
+        // degraded path, not a dead end.
+        const err = e as ApiError;
+        const brief = err.body?.brief;
+        setHandoff(typeof brief === "string" ? { runId, brief } : null);
+        setNotice({ tone: "danger", text: err.message });
+      } finally {
+        setDispatching(false);
+        await Promise.all([loadRuns(), loadLeads()]);
+      }
+    },
+    [loadRuns, loadLeads],
+  );
 
   async function startRun() {
     if (icp.trim().length < 3) return;
+    let runId: string;
     try {
-      const { run } = await api.createRun(icp.trim());
-      setHandoff(handoffBrief(run.id, run.icp_prompt));
+      runId = (await api.createRun(icp.trim())).run.id;
       setIcp("");
-      await Promise.all([loadRuns(), loadLeads()]);
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
+      return;
     }
+    await dispatch(runId);
   }
 
   async function onCsv(file: File) {
@@ -270,24 +281,31 @@ export function App() {
                       />
                     </label>
                     {/* The single coral action on this screen. */}
-                    <Button variant="primary" onClick={startRun} disabled={icp.trim().length < 3}>
-                      Start search <ArrowUp size={13} />
+                    <Button
+                      variant="primary"
+                      onClick={startRun}
+                      disabled={icp.trim().length < 3 || dispatching}
+                    >
+                      {dispatching ? "Starting…" : "Start search"} <ArrowUp size={13} />
                     </Button>
                   </div>
                 </Zone>
               </Card>
 
+              {/* Shown only when the app could not reach the agent itself. The
+                  search is already saved, so this is a fallback route to the
+                  same outcome — not a lost run. */}
               {handoff ? (
                 <Card className="mb-6">
                   <Zone>
-                    <Eyebrow right="sourcing runs on your agent, not in this app">Hand off to your agent</Eyebrow>
+                    <Eyebrow right="the search is saved either way">Hand this to your agent</Eyebrow>
                     <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-sunken px-3 py-2 text-xs leading-relaxed text-muted">
-                      {handoff}
+                      {handoff.brief}
                     </pre>
                     <div className="mt-2 flex items-center gap-2">
                       <Button
                         onClick={() => {
-                          void navigator.clipboard.writeText(handoff).then(() => {
+                          void navigator.clipboard.writeText(handoff.brief).then(() => {
                             setCopied(true);
                             setTimeout(() => setCopied(false), 2000);
                           });
@@ -295,6 +313,9 @@ export function App() {
                       >
                         {copied ? <Check size={13} strokeWidth={2.5} /> : <Copy size={13} />}
                         {copied ? "Copied" : "Copy brief"}
+                      </Button>
+                      <Button onClick={() => void dispatch(handoff.runId)} disabled={dispatching}>
+                        <RefreshCw size={13} /> {dispatching ? "Retrying…" : "Retry"}
                       </Button>
                       <Button variant="ghost" onClick={() => setHandoff(null)}>
                         Dismiss

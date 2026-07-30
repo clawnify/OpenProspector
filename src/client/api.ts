@@ -57,13 +57,46 @@ export interface Attempt {
   created_at: string;
 }
 
+export interface AgentServer {
+  id: string;
+  name: string | null;
+  status: string | null;
+}
+
+export interface AgentState {
+  /** False off-platform — the app then falls back to a copyable brief. */
+  available: boolean;
+  /** False when the platform didn't answer. Distinct from having no agents. */
+  reachable: boolean;
+  server_id: string | null;
+  servers: AgentServer[];
+}
+
+/**
+ * Carries the response body, not just its message. A failed dispatch returns the
+ * brief the user can hand over by hand and, when the org has several agents, the
+ * list to choose from — losing that on the way up would cost a second call.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { "content-type": "application/json", ...(init?.headers || {}) },
   });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as { error?: string }).error || `Request failed (${res.status})`);
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    throw new ApiError((body.error as string) || `Request failed (${res.status})`, res.status, body);
+  }
   return body as T;
 }
 
@@ -83,6 +116,21 @@ export const api = {
 
   createRun: (icp_prompt: string) =>
     req<{ run: Run }>("/api/runs", { method: "POST", body: JSON.stringify({ icp_prompt }) }),
+
+  /** Hand a run to the agent. Throws an ApiError carrying `brief` when it fails. */
+  dispatchRun: (id: string) =>
+    req<{ dispatched: boolean; task_id: string; server_id: string | null; duplicate: boolean }>(
+      `/api/runs/${id}/dispatch`,
+      { method: "POST" },
+    ),
+
+  agent: () => req<AgentState>("/api/agent"),
+
+  setAgentServer: (server_id: string | null) =>
+    req<{ server_id: string | null }>("/api/agent", {
+      method: "PUT",
+      body: JSON.stringify({ server_id: server_id ?? "" }),
+    }),
 
   /** Progress reporting — normally the agent's call, exposed here for the UI's sake. */
   patchRun: (id: string, patch: { status?: string; error?: string }) =>

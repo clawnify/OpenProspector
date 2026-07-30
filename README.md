@@ -70,6 +70,19 @@ export const MyProvider: EnrichProvider = {
 
 Adapters are pure request/response wrappers with no app coupling — no database, no caching, no ordering logic. The runner owns all of that, which is what keeps the registry cheap to extend.
 
+## How a Search Runs
+
+Sourcing and enrichment are deliberately different jobs, and this app only does one of them.
+
+1. **You describe an ICP** — "marketing agencies in Amsterdam, reach the creative director".
+2. **Your agent sources.** The app hands the search to your agent, which researches the live web — maps and review sites, job boards, funding news, professional profiles — and posts back a named person, a company domain, and *one line of evidence* for why each lead qualifies. That work needs judgment and a real browser, so it does not run inside the app.
+3. **The app enriches.** Every sourced lead goes through the provider waterfall below to resolve a verified email or phone, on your keys, at vendor cost.
+4. **You export.** CSV, or a POST to your CRM or sequencer.
+
+Progress shows up on the search itself — sourcing, enriching, done — including a **stalled** state if the agent stops reporting, so a search that died is never mistaken for one still working.
+
+If the app can't reach your agent, it hands you the brief to paste into your agent's chat instead. The search is saved either way, and can be retried.
+
 ## How the Waterfall Works
 
 1. **Cache first.** A normalized `(field, name, domain)` key is checked before any vendor call. A hit costs nothing.
@@ -81,6 +94,7 @@ Cached values expire after **90 days**. Contact data decays as people change job
 
 ## Features
 
+- **Agent-run sourcing** — describe an ICP and your agent researches the live web; progress and failures surface on the search
 - **Configurable waterfalls** — independent provider order per field, editable in the UI
 - **Enrichment cache** — never buy the same contact twice, with a staleness cap
 - **Cost ledger** — per-provider outcome and credit breakdown; spend is read back from the ledger, so a crashed job can't under-report

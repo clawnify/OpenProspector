@@ -98,3 +98,14 @@ CREATE TABLE IF NOT EXISTS waterfall_config (
   provider_order TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Which agent sourcing runs are dispatched to. Only meaningful for an org
+-- running more than one agent: with a single agent the platform resolves it and
+-- this stays empty. Deliberately a singleton (CHECK id = 1) rather than a
+-- general key/value table — there is exactly one such choice, and a generic
+-- config bag invites unrelated state to accumulate in it.
+CREATE TABLE IF NOT EXISTS agent_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  server_id TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);

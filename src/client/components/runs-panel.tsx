@@ -42,7 +42,10 @@ function StatusBadge({ run }: { run: Run }) {
         </Badge>
       );
     default:
-      return <Badge tone="neutral">Awaiting agent</Badge>;
+      // 'pending' now means the handoff never reached the agent — a run that
+      // started successfully goes straight to 'sourcing'. "Awaiting agent" read
+      // as normal progress, which is precisely what it isn't.
+      return <Badge tone="neutral">Not started</Badge>;
   }
 }
 
@@ -63,7 +66,7 @@ export function RunsPanel({
         </Zone>
         <Empty
           title="No searches yet"
-          hint="Describe an ideal customer above to create one, then hand the brief to your agent."
+          hint="Describe an ideal customer above — your agent researches the web and the leads land here."
         />
       </Card>
     );

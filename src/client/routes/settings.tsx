@@ -1,13 +1,116 @@
 // Waterfall configuration. Set once, then almost never touched — so it lives
 // behind its own route rather than occupying the working surface.
 
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, CircleAlert, Database } from "lucide-react";
+import { ArrowLeft, Bot, CircleAlert, Database } from "lucide-react";
 import { Badge, Card, Chip, Eyebrow, Favicon, Zone } from "../components/ui";
 import { WaterfallCard } from "../components/waterfall";
-import type { Provider } from "../api";
+import { api, type AgentState, type Provider } from "../api";
 
 const FIELDS = ["email", "phone"];
+
+/**
+ * Which agent does the sourcing.
+ *
+ * Only worth a choice when the org runs more than one: with a single agent the
+ * platform resolves it and the picker would be a decision with one option. With
+ * several it refuses to guess — so without this, every search fails.
+ *
+ * Loads its own state rather than taking it as a prop: nothing else on the
+ * screen needs it, and the working surface shouldn't pay for a platform
+ * round-trip it never reads.
+ */
+function AgentCard() {
+  const [state, setState] = useState<AgentState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setState(await api.agent());
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function choose(serverId: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.setAgentServer(serverId || null);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!state) return null;
+
+  return (
+    <Card className="mb-6">
+      <Zone>
+        <Eyebrow right={state.available ? undefined : "unavailable"}>Sourcing agent</Eyebrow>
+        <p className="mt-1.5 text-xs text-muted">
+          Searches are handed to your agent, which researches the live web and posts the leads back here. Enrichment
+          runs in this app; sourcing never does — it needs a real browser and minutes of runtime.
+        </p>
+
+        {!state.available ? (
+          <p className="mt-2 text-xs text-muted">
+            This deployment can't reach the platform, so searches fall back to a brief you paste into your agent's
+            chat. Everything else works unchanged.
+          </p>
+        ) : !state.reachable ? (
+          <p className="mt-2 text-xs text-danger">Couldn't reach the platform to list your agents. Try again shortly.</p>
+        ) : state.servers.length === 0 ? (
+          <p className="mt-2 text-xs text-warning">No agents in this organization yet.</p>
+        ) : state.servers.length === 1 ? (
+          <span className="mt-2 inline-flex">
+            <Chip>
+              <Bot size={11} /> {state.servers[0].name || state.servers[0].id}
+            </Chip>
+          </span>
+        ) : (
+          <>
+            <select
+              value={state.server_id ?? ""}
+              disabled={saving}
+              onChange={(e) => void choose(e.target.value)}
+              className="mt-2 w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {/* Empty is a real, invalid state, not a default: with several
+                  agents the platform refuses to pick one, so leaving this unset
+                  means searches fail until it is chosen. Say so rather than
+                  silently defaulting to the first. */}
+              <option value="">Choose an agent…</option>
+              {state.servers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name || s.id}
+                  {s.status && s.status !== "ready" ? ` — ${s.status}` : ""}
+                </option>
+              ))}
+            </select>
+            {!state.server_id ? (
+              <p className="mt-1.5 text-xs text-warning">
+                You have more than one agent. Pick the one that should source leads — searches can't start until you
+                do.
+              </p>
+            ) : null}
+          </>
+        )}
+
+        {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
+      </Zone>
+    </Card>
+  );
+}
 
 export function Settings({
   providers,
@@ -30,9 +133,11 @@ export function Settings({
         </Link>
         <h1 className="mt-2 text-xl font-bold tracking-tight">Settings</h1>
         <p className="mt-0.5 text-sm text-muted">
-          Provider keys and waterfall order. Configure once — enrichment uses this on every run.
+          Sourcing agent, provider keys, and waterfall order. Configure once — every search uses this.
         </p>
       </div>
+
+      <AgentCard />
 
       <Card className="mb-6">
         <Zone>
