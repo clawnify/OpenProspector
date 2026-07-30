@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#DD5164"/>
+  <!-- Funnel: many sourced companies narrowing to a few verified contacts —
+       the waterfall, read top to bottom. -->
+  <path d="M128 140 H384 L296 262 V366 Q296 378 284 384 L228 412 Q216 418 216 404 V262 Z"
+        fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- The verified result that comes out the bottom. -->
+  <circle cx="256" cy="188" r="16" fill="#FFFFFF" opacity="0.55"/>
+  <circle cx="196" cy="188" r="16" fill="#FFFFFF" opacity="0.35"/>
+  <circle cx="316" cy="188" r="16" fill="#FFFFFF" opacity="0.35"/>
+</svg>
