@@ -2,6 +2,8 @@
 
 # Open Prospector: The Open-Source Clay Alternative for Lead Enrichment
 
+[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-prospector)
+
 Find B2B leads and enrich them with **your own provider keys** — at vendor cost, with no per-lead markup. An open-source app template provided by [Clawnify.com](https://clawnify.com).
 
 Built with **React + Tailwind** on a **Hono API** and a **SQLite** database. Path-based routing, UUID keys, a dark mode that follows the OS, and a full OpenAPI surface so agents can drive it.
