@@ -1,6 +1,6 @@
-<img src="readme-banner.png" alt="Open Prospector preview" width="100%" />
+<img src="readme-banner.png" alt="OpenProspector preview" width="100%" />
 
-# Open Prospector: The Open-Source Clay Alternative for Lead Enrichment
+# OpenProspector: The Open-Source Clay Alternative for Lead Enrichment
 
 [![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-prospector)
 
@@ -12,11 +12,11 @@ Built with **React + Tailwind** on a **Hono API** and a **SQLite** database. Pat
 
 Lead-enrichment SaaS resells contact data. Clay, Apollo, and the newer AI prospecting tools buy credits wholesale from a handful of data vendors and charge you a marked-up per-lead price on top — typically **$0.10–$0.15 per lead**.
 
-Open Prospector inverts that. You bring your own vendor keys, you pay the vendor directly, and the app does the part that actually carries the value: **orchestrating the waterfall**. Try the cheapest provider first, validate the result, fall through to the next one only if it missed, never buy the same person twice.
+OpenProspector inverts that. You bring your own vendor keys, you pay the vendor directly, and the app does the part that actually carries the value: **orchestrating the waterfall**. Try the cheapest provider first, validate the result, fall through to the next one only if it missed, never buy the same person twice.
 
 The savings are not theoretical:
 
-| | Per-lead SaaS | Open Prospector (BYO key) |
+| | Per-lead SaaS | OpenProspector (BYO key) |
 |---|---|---|
 | Cost per verified email | ~$0.12 | **~$0.02** |
 | Re-checking a lead you already own | Full price again | **Free** (cached) |
@@ -110,7 +110,7 @@ Cached values expire after **90 days**. Contact data decays as people change job
 
 **It does not send email.** No sequencer, no SMTP, no "enroll 20 leads" button — not even bring-your-own.
 
-That is a considered decision, not a missing feature. Cold-email sending at volume is a deliverability and compliance problem (CAN-SPAM, GDPR) that belongs in a tool you have configured, warmed, and are accountable for. Open Prospector's job ends at a verified, attributed contact record; export it to your CRM or your own sequencer and send from there.
+That is a considered decision, not a missing feature. Cold-email sending at volume is a deliverability and compliance problem (CAN-SPAM, GDPR) that belongs in a tool you have configured, warmed, and are accountable for. OpenProspector's job ends at a verified, attributed contact record; export it to your CRM or your own sequencer and send from there.
 
 ## Quickstart
 
