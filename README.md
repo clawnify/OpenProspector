@@ -2,7 +2,7 @@
 
 # OpenProspector: The Open-Source Clay Alternative for Lead Enrichment
 
-[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-prospector)
+[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/OpenProspector)
 
 Find B2B leads and enrich them with **your own provider keys** — at vendor cost, with no per-lead markup. An open-source app template provided by [Clawnify.com](https://clawnify.com).
 
@@ -115,7 +115,7 @@ That is a considered decision, not a missing feature. Cold-email sending at volu
 ## Quickstart
 
 ```bash
-git clone https://github.com/clawnify/open-prospector.git
+git clone https://github.com/clawnify/OpenProspector.git
 cd open-prospector
 pnpm install
 
