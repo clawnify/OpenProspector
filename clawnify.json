@@ -1,6 +1,6 @@
 {
   "$schema": "https://app.clawnify.com/schema/v1/clawnify.json",
-  "name": "Open Prospector",
+  "name": "OpenProspector",
   "description": "Lead sourcing and enrichment on your own provider keys. The agent researches the live web to find companies and people matching an ICP; the app resolves emails and phones through a configurable provider waterfall with a cache and a per-credit cost ledger. Pays vendors at cost with no per-lead markup. Deliberately has no email-sending capability. An open-source alternative to Clay and per-lead AI prospecting tools.",
   "app": {
     "framework": "react+hono",

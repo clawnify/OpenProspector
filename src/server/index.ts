@@ -24,7 +24,7 @@ type Env = {
 };
 
 const app = createApp<Env>({
-  title: "Open Prospector",
+  title: "OpenProspector",
   version: "1.0.0",
   description:
     "Find and enrich B2B leads with your own provider keys. ICP search, a configurable enrichment waterfall, and export — no markup, no per-lead pricing.",

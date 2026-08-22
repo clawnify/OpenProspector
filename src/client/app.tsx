@@ -219,7 +219,7 @@ export function App() {
             <>
               <header className="mb-7 flex items-end justify-between gap-4">
                 <div>
-                  <h1 className="text-xl font-bold tracking-tight">Open Prospector</h1>
+                  <h1 className="text-xl font-bold tracking-tight">OpenProspector</h1>
                   <p className="mt-0.5 text-sm text-muted">
                     Find and enrich leads with your own provider keys — at cost, with no per-lead markup.
                   </p>

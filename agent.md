@@ -1,4 +1,4 @@
-# Open Prospector — agent guide
+# OpenProspector — agent guide
 
 ## What you do, and what you must not
 

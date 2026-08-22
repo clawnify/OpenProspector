@@ -147,7 +147,7 @@ export async function dispatchTask(
  */
 export function sourcingBrief(opts: { runId: string; prompt: string; appUrl: string }): string {
   return [
-    `Find leads matching this ICP and add them to Open Prospector (${opts.appUrl}):`,
+    `Find leads matching this ICP and add them to OpenProspector (${opts.appUrl}):`,
     ``,
     `"${opts.prompt}"`,
     ``,
