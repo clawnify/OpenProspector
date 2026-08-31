@@ -18,33 +18,39 @@ export interface PlannedProvider {
   fields: readonly EnrichField[];
   /** Homepage — used for the vendor mark and the "learn more" link. */
   homepage: string;
+  /** Why it is not shipped, shown next to the badge. */
+  blockedBy: string;
 }
 
 /**
- * Order within each field is the intended default waterfall position, not an
- * arbitrary list. Phone runs deeper than email because phone credits cost
- * multiples of an email at every vendor, so falling through more providers
- * before giving up is worth it.
+ * Zeliq is the one vendor in the roadmap this app cannot currently adapt, and
+ * the reason is structural rather than unfinished work.
+ *
+ * Both of its enrichment endpoints (`/contact/enrich/email` and
+ * `/contact/enrich/phone`) mark `callback_url` as **required** and deliver the
+ * result only as a webhook POST, minutes later, with retries backing off for
+ * over an hour. There is no synchronous mode. Every other vendor here answers
+ * in the same request.
+ *
+ * The waterfall runner is synchronous by necessity: it decides whether to spend
+ * a credit at the next vendor based on whether this one resolved the field, so
+ * it cannot proceed without an answer. Supporting Zeliq therefore is not an
+ * adapter — it is a second, deferred execution path (a pending-enrichment
+ * table, a public callback route with its own token, and out-of-band lead and
+ * ledger writes). That is a deliberate feature, not a line in a registry, so it
+ * is recorded here rather than half-built.
  */
 export const PLANNED: readonly PlannedProvider[] = [
-  { id: "leadmagic", label: "LeadMagic", fields: ["email", "phone"], homepage: "https://leadmagic.io" },
-  { id: "wiza", label: "Wiza", fields: ["email", "phone"], homepage: "https://wiza.co" },
-  { id: "peopledatalabs", label: "People Data Labs", fields: ["email", "phone"], homepage: "https://peopledatalabs.com" },
-  { id: "prospeo", label: "Prospeo", fields: ["email", "phone"], homepage: "https://prospeo.io" },
-  { id: "bytemine", label: "Bytemine", fields: ["phone"], homepage: "https://bytemine.io" },
-  { id: "forager", label: "Forager", fields: ["phone"], homepage: "https://forager.ai" },
-  { id: "contactout", label: "ContactOut", fields: ["phone"], homepage: "https://contactout.com" },
-  { id: "zeliq", label: "Zeliq", fields: ["phone"], homepage: "https://zeliq.com" },
+  {
+    id: "zeliq",
+    label: "Zeliq",
+    fields: ["email", "phone"],
+    homepage: "https://zeliq.com",
+    blockedBy: "Webhook-only API — needs a deferred enrichment path, not an adapter",
+  },
 ];
 
-/** Planned ids for one field, in intended waterfall order. */
+/** Planned ids for one field, in intended waterfall position. */
 export function plannedForField(field: EnrichField): PlannedProvider[] {
-  const ORDER: Record<EnrichField, string[]> = {
-    // Findymail is position 1 and already implemented, so it is not listed here.
-    email: ["leadmagic", "wiza", "peopledatalabs", "prospeo"],
-    phone: ["bytemine", "peopledatalabs", "leadmagic", "wiza", "forager", "prospeo", "contactout", "zeliq"],
-  };
-  return ORDER[field]
-    .map((id) => PLANNED.find((p) => p.id === id))
-    .filter((p): p is PlannedProvider => Boolean(p));
+  return PLANNED.filter((p) => p.fields.includes(field));
 }

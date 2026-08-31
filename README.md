@@ -25,34 +25,51 @@ The savings are not theoretical:
 
 > **Where this *doesn't* win.** Most vendors sell credits on a monthly floor — Findymail's entry plan is $99/mo for 5,000 credits. Below roughly **800 leads/month**, a usage-priced SaaS is genuinely cheaper. This template is for teams doing real volume.
 
-## Provider Roadmap
+## Providers
 
 Each field has its own independently-ordered waterfall. The order below is the shipping default; **you can reorder any of it in the UI**, and you should — the optimal order depends on which vendors you already pay for and how your ICP resolves.
 
+Every adapter is written against the vendor's own published contract, and its response mapping is covered by tests: a hit, a miss, a rejected key, and the eligibility gate that decides whether the vendor is called at all. Getting those confused is what makes a waterfall either stop resolving or quietly keep spending.
+
 ### Email waterfall
 
-| # | Provider | Status |
-|---|----------|--------|
-| 1 | **Findymail** | ✅ Shipped |
-| 2 | LeadMagic | Planned |
-| 3 | Wiza | Planned |
-| 4 | People Data Labs | Planned |
-| 5 | Prospeo | Planned |
+| # | Provider | Cost on a hit | Verified? | Needs |
+|---|----------|---------------|-----------|-------|
+| 1 | **Findymail** | 1 credit | ✅ | name + domain |
+| 2 | **LeadMagic** | 1 credit | ✅ | name + domain/company |
+| 3 | **Prospeo** | 1 credit | ✅ | profile URL, email, or name + company |
+| 4 | **Wiza** | ~2 credits | graded | profile URL, email, or name + company |
+| 5 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
+| 6 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
+| 7 | **Forager** | 1 credit | graded | profile URL |
+| 8 | **Bytemine** | 1 credit | graded | profile URL |
 
 ### Phone waterfall
 
-| # | Provider | Status |
-|---|----------|--------|
-| 1 | Bytemine | Planned |
-| 2 | People Data Labs | Planned |
-| 3 | LeadMagic | Planned |
-| 4 | Wiza | Planned |
-| 5 | Forager | Planned |
-| 6 | Prospeo | Planned |
-| 7 | ContactOut | Planned |
-| 8 | Zeliq | Planned |
+| # | Provider | Cost on a hit | Needs |
+|---|----------|---------------|-------|
+| 1 | **Bytemine** | 1 credit | profile URL, email, or name + domain |
+| 2 | **Forager** | 1 credit | profile URL |
+| 3 | **People Data Labs** | 1 match | profile URL, email, or name + company |
+| 4 | **LeadMagic** | 5 credits | profile URL **or work email** |
+| 5 | **Wiza** | ~5 credits | profile URL, email, or name + company |
+| 6 | **ContactOut** | 2 credits | profile URL, email, or name + company |
+| 7 | **Prospeo** | 10 credits | profile URL, email, or name + company |
 
-Phone credits cost meaningfully more than email — Findymail, for instance, prices a phone number at **10×** an email — which is why the phone waterfall runs deeper before giving up, and why ordering it well matters more.
+Phone credits cost meaningfully more than email — Prospeo prices a mobile at **10×** an email — which is why the phone waterfall runs deeper before giving up, and why ordering it well matters more.
+
+**The phone waterfall runs on the email waterfall's output.** Most phone vendors key on a work email or a profile URL, not on a name and a domain, so a freshly sourced lead has nothing they can match. The runner therefore resolves email first and feeds the result forward as an input. Without that, four of the seven phone vendors could never run at all.
+
+### Not shipped
+
+| Provider | Why |
+|----------|-----|
+| Zeliq | Both of its enrichment endpoints require a `callback_url` and deliver the result only as a webhook, minutes later. There is no synchronous mode. Supporting it is a second, deferred execution path — a pending-enrichment table, a public callback route, out-of-band lead writes — not an adapter, so it is left declared rather than half-built. |
+
+### Two keys that are not a plain token
+
+- **Forager** puts the account id in the URL path, so its secret is stored as `FORAGER_API_KEY=accountId:apiKey`.
+- Every other vendor takes an opaque key. The settings screen shows the expected shape next to each field.
 
 ### Adding a provider
 
@@ -102,6 +119,7 @@ Cached values expire after **90 days**. Contact data decays as people change job
 - **Cost ledger** — per-provider outcome and credit breakdown; spend is read back from the ledger, so a crashed job can't under-report
 - **Provider attribution** — every enriched cell shows which vendor produced it
 - **CSV import** — bring a list you already have; column headers are matched loosely
+- **LinkedIn Matched Audiences export** — contact and company lists in exactly the header shape Campaign Manager expects, so an enriched search becomes an ad audience without a spreadsheet in between
 - **Batch enrichment** — large lists process as chained background jobs, safe against redelivery
 - **Full OpenAPI** — `/api/openapi.json` and `/llms.txt` for agent-driven use
 - **Dark mode** that follows the OS
@@ -146,6 +164,8 @@ All list endpoints are paginated (`?page=`, `?limit=`, max 100) and searchable �
 | `GET` | `/api/leads`, `/api/leads/{id}` | List leads; one lead with its attempt log |
 | `POST` | `/api/leads/{id}/enrich` | Enrich one lead (`?refresh=true` to re-buy) |
 | `GET` | `/api/export/leads.csv` | Download leads as CSV (bounded; page with `offset`) |
+| `GET` | `/api/export/leads.csv?format=linkedin-contacts` | LinkedIn Matched Audiences **contact** list |
+| `GET` | `/api/export/leads.csv?format=linkedin-companies` | LinkedIn Matched Audiences **company** list, deduplicated |
 | `POST` | `/api/export/push` | POST leads to a CRM, sequencer, or webhook you control |
 
 **Push safety.** The destination is caller-supplied, so it is validated before anything is sent: **https only**, public hosts only (loopback, private ranges, carrier-grade NAT, IPv6 unique/link-local, `.local`/`.internal`, and cloud metadata addresses are all refused), hop-by-hop and `Host` headers stripped, header-injection attempts dropped, and **redirects refused rather than followed** — a permitted host must not be able to bounce your contact data onward.

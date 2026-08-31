@@ -17,42 +17,22 @@ import type {
   EnrichProvider,
   EnrichResult,
   InputRequirement,
-  LeadInput,
 } from "./types";
+import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://app.findymail.com";
 
-async function call(
-  path: string,
-  apiKey: string,
-  init?: { method?: string; body?: unknown },
-): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: init?.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
+function call(path: string, apiKey: string, init?: { method?: string; body?: unknown }) {
+  return vendorFetch(`${BASE}${path}`, {
+    method: init?.method,
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: init?.body,
   });
-  // Vendors return HTML on some error paths; never let a parse failure throw.
-  let body: unknown = null;
-  try {
-    body = await res.json();
-  } catch {
-    body = null;
-  }
-  return { status: res.status, body };
 }
 
 /** Map a non-2xx status onto an outcome the runner knows how to act on. */
 function outcomeForStatus(status: number): { outcome: EnrichResult["outcome"]; detail: string } {
-  if (status === 401 || status === 403) return { outcome: "unconfigured", detail: "API key rejected" };
-  if (status === 402) return { outcome: "no_credits", detail: "Out of Findymail credits" };
-  if (status === 404) return { outcome: "miss", detail: "No record found" };
-  if (status === 429) return { outcome: "error", detail: "Rate limited by Findymail" };
-  return { outcome: "error", detail: `Findymail returned HTTP ${status}` };
+  return statusOutcome(status, "Findymail");
 }
 
 export const FindymailProvider: EnrichProvider = {
@@ -69,12 +49,8 @@ export const FindymailProvider: EnrichProvider = {
   },
 
   async find(field, input, apiKey): Promise<EnrichResult> {
-    if (field !== "email") {
-      return { outcome: "ineligible", value: null, verified: false, creditsUsed: 0, detail: "Findymail resolves email only" };
-    }
-    if (!input.fullName || !input.domain) {
-      return { outcome: "ineligible", value: null, verified: false, creditsUsed: 0, detail: "Needs full name and domain" };
-    }
+    if (field !== "email") return ineligible("Findymail resolves email only");
+    if (!input.fullName || !input.domain) return ineligible("Needs full name and domain");
 
     const { status, body } = await call("/api/search/name", apiKey, {
       method: "POST",
@@ -87,10 +63,8 @@ export const FindymailProvider: EnrichProvider = {
     }
 
     const email = (body as { contact?: { email?: string } } | null)?.contact?.email ?? null;
-    if (!email) {
-      // 200 with no contact is Findymail's "searched, found nothing" — no credit spent.
-      return { outcome: "miss", value: null, verified: false, creditsUsed: 0, detail: "No record found" };
-    }
+    // 200 with no contact is Findymail's "searched, found nothing" — no credit spent.
+    if (!email) return miss();
     // Documented: a successful find consumes exactly one credit.
     return { outcome: "hit", value: email, verified: true, creditsUsed: 1 };
   },

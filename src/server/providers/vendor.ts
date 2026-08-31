@@ -1,0 +1,97 @@
+// Shared vendor plumbing. Every adapter needs the same three things, so they
+// live here once rather than eight times over: a fetch that cannot throw on a
+// non-JSON error body, the HTTP-status → outcome mapping almost every vendor
+// follows, and the input requirement four of them share.
+
+import type { EnrichResult, InputRequirement } from "./types";
+
+export interface VendorResponse {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * One vendor call. Adapters are contracted never to throw, and the single most
+ * common way they would is a vendor answering an error with HTML: `res.json()`
+ * rejects, and a 502 becomes an unhandled exception mid-batch. So the parse is
+ * swallowed and the caller decides based on `status`.
+ */
+export async function vendorFetch(
+  url: string,
+  init: { method?: string; headers?: Record<string, string>; body?: unknown },
+): Promise<VendorResponse> {
+  const res = await fetch(url, {
+    method: init.method ?? "GET",
+    headers: {
+      Accept: "application/json",
+      ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...init.headers,
+    },
+    ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+  });
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { status: res.status, body };
+}
+
+/**
+ * The status mapping nearly every vendor in this registry shares. Adapters
+ * override the cases where their vendor genuinely differs rather than each
+ * restating the common ones.
+ *
+ * `401/403 → unconfigured` is deliberate: to the user, a rejected key and an
+ * absent key are the same problem — this vendor is not usable until they fix
+ * the key — and both must skip rather than fail the run.
+ */
+export function statusOutcome(
+  status: number,
+  vendor: string,
+): { outcome: EnrichResult["outcome"]; detail: string } {
+  if (status === 401 || status === 403) return { outcome: "unconfigured", detail: `${vendor} rejected the API key` };
+  if (status === 402) return { outcome: "no_credits", detail: `Out of ${vendor} credits` };
+  if (status === 404) return { outcome: "miss", detail: "No record found" };
+  if (status === 429) return { outcome: "error", detail: `Rate limited by ${vendor}` };
+  return { outcome: "error", detail: `${vendor} returned HTTP ${status}` };
+}
+
+/** A skip that spent nothing, in the shape `find()` must return. */
+export function ineligible(detail: string): EnrichResult {
+  return { outcome: "ineligible", value: null, verified: false, creditsUsed: 0, detail };
+}
+
+/** A vendor-searched-and-found-nothing answer. */
+export function miss(detail = "No record found", creditsUsed = 0): EnrichResult {
+  return { outcome: "miss", value: null, verified: false, creditsUsed, detail };
+}
+
+/**
+ * "A strong identifier, or a name plus something that identifies the company."
+ *
+ * Reads as two alternative groups, both of which must be satisfied:
+ *   1. profile URL, or email, or a name
+ *   2. profile URL, or email, or a domain, or a company name
+ *
+ * So a profile URL alone passes, an email alone passes, and name + domain
+ * passes — but a bare name does not, because no vendor can resolve "John Smith"
+ * without knowing where he works, and calling one anyway spends a credit to
+ * learn that. Shared by the four vendors that accept alternative identifiers.
+ */
+export const IDENTIFIED_PERSON: InputRequirement = [
+  ["linkedinUrl", "email", "fullName"],
+  ["linkedinUrl", "email", "domain", "company"],
+];
+
+/**
+ * The `linkedin.com/in/<slug>` public identifier. Some vendors key on the slug
+ * rather than the URL, and our leads carry whatever the agent sourced — with or
+ * without a trailing slash, query string, or locale subdomain.
+ */
+export function linkedinSlug(url: string | undefined): string | null {
+  if (!url) return null;
+  const m = /\/in\/([^/?#]+)/.exec(url);
+  return m ? decodeURIComponent(m[1]) : null;
+}

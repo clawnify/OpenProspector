@@ -14,17 +14,68 @@ import type {
   EnrichAttempt,
   EnrichField,
   EnrichProvider,
+  InputRequirement,
   LeadInput,
+  RequirementKey,
   WaterfallResult,
 } from "./types";
+import { BytemineProvider } from "./bytemine";
+import { ContactOutProvider } from "./contactout";
 import { FindymailProvider } from "./findymail";
+import { ForagerProvider } from "./forager";
+import { LeadMagicProvider } from "./leadmagic";
+import { PeopleDataLabsProvider } from "./peopledatalabs";
+import { ProspeoProvider } from "./prospeo";
+import { WizaProvider } from "./wiza";
 
 /**
  * Every known adapter. Registry order is only the *default* — users reorder
  * their waterfall per field in settings, because the cheapest-first ordering
  * that suits one ICP is the wrong one for another.
  */
-export const REGISTRY: readonly EnrichProvider[] = [FindymailProvider];
+export const REGISTRY: readonly EnrichProvider[] = [
+  FindymailProvider,
+  LeadMagicProvider,
+  WizaProvider,
+  PeopleDataLabsProvider,
+  ProspeoProvider,
+  ContactOutProvider,
+  ForagerProvider,
+  BytemineProvider,
+];
+
+/**
+ * Default waterfall order per field, used until the user reorders it.
+ *
+ * Not the registry's array order, because the two fields want different
+ * sequences: phone credits cost multiples of an email at every vendor, so the
+ * phone waterfall runs deeper before giving up and leads with the vendors whose
+ * phone coverage is their actual product. Ids absent from a field's list are
+ * still selectable in the UI — this is only what a fresh install starts with.
+ */
+export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
+  // Cheapest-and-most-verified first. Findymail and LeadMagic both return only
+  // addresses they have already validated, so a hit there ends the waterfall at
+  // one credit. Prospeo is next because it too can be told to return verified
+  // addresses only. People Data Labs sits late: it never asserts deliverability,
+  // so its answer is a fallback rather than a stop.
+  // Forager and Bytemine trail: both can only resolve an email from a LinkedIn
+  // URL, so for a lead sourced without one they are a guaranteed skip.
+  email: ["findymail", "leadmagic", "prospeo", "wiza", "peopledatalabs", "contactout", "forager", "bytemine"],
+  // Phone runs deeper, and leads with the vendors whose mobile coverage is the
+  // product rather than a side line. Prospeo is last of the finders because a
+  // mobile there is 10 credits against 1–5 elsewhere.
+  phone: ["bytemine", "forager", "peopledatalabs", "leadmagic", "wiza", "contactout", "prospeo"],
+};
+
+/** The shipping default for one field, filtered to adapters that can serve it. */
+export function defaultOrder(field: EnrichField): string[] {
+  const known = new Set(providersForField(field).map((p) => p.id));
+  const ordered = DEFAULT_ORDER[field].filter((id) => known.has(id));
+  // Anything in the registry the map forgot still runs, just last — a new
+  // adapter is never silently unreachable because someone missed a line here.
+  return [...ordered, ...[...known].filter((id) => !ordered.includes(id))];
+}
 
 export function providerById(id: string): EnrichProvider | undefined {
   return REGISTRY.find((p) => p.id === id);
@@ -101,20 +152,29 @@ export function cacheKey(field: EnrichField, input: LeadInput): string {
   return `${field}|${name}|${domain}`;
 }
 
+/** One requirement key satisfied? `fullName` also accepts first + last parts. */
+function hasKey(input: LeadInput, key: RequirementKey): boolean {
+  if (key === "fullName") return Boolean(input.fullName || (input.firstName && input.lastName));
+  return Boolean(input[key]);
+}
+
 function meetsRequirements(provider: EnrichProvider, field: EnrichField, input: LeadInput): boolean {
-  return provider.requirements(field).every((key) => {
-    if (key === "fullName") {
-      return Boolean(input.fullName || (input.firstName && input.lastName));
-    }
-    return Boolean(input[key]);
-  });
+  return provider.requirements(field).every((req) =>
+    Array.isArray(req) ? req.some((k) => hasKey(input, k)) : hasKey(input, req as RequirementKey),
+  );
+}
+
+/** "linkedinUrl or email, fullName" — the attempt-log reason for an `ineligible`. */
+export function describeRequirements(req: InputRequirement): string {
+  return req.map((r) => (Array.isArray(r) ? r.join(" or ") : String(r))).join(", ");
 }
 
 /** Fill in `fullName` from parts so adapters never have to reassemble it. */
 function normalize(input: LeadInput): LeadInput {
   const fullName = input.fullName?.trim() || [input.firstName, input.lastName].filter(Boolean).join(" ").trim();
   const domain = input.domain?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
-  return { ...input, fullName: fullName || undefined, domain: domain || undefined };
+  const email = input.email?.trim().toLowerCase();
+  return { ...input, fullName: fullName || undefined, domain: domain || undefined, email: email || undefined };
 }
 
 /**
@@ -163,7 +223,7 @@ export async function runWaterfall(
       continue;
     }
     if (!meetsRequirements(provider, field, input)) {
-      const needs = provider.requirements(field).join(", ");
+      const needs = describeRequirements(provider.requirements(field));
       attempts.push({ providerId: id, field, outcome: "ineligible", creditsUsed: 0, ms: 0, detail: `Needs ${needs}` });
       continue;
     }

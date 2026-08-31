@@ -44,6 +44,12 @@ export interface Provider {
   secret_name: string;
   signup_url: string;
   configured: boolean;
+  /** "planned" vendors are declared but have no adapter — the runner never calls them. */
+  status: "available" | "planned";
+  /** Shape of the secret when it is not an opaque key, e.g. Forager's `accountId:apiKey`. */
+  key_format?: string;
+  /** Why a planned vendor is not shipped yet. */
+  blocked_by?: string;
   credits_remaining?: number | null;
 }
 

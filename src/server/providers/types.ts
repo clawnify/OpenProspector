@@ -15,10 +15,27 @@ export interface LeadInput {
   domain?: string;
   company?: string;
   linkedinUrl?: string;
+  /**
+   * Work email, when we already have one. Not just an output: most phone
+   * vendors key off an email or a profile URL rather than name + domain, so the
+   * email waterfall's result is fed into the phone waterfall as an input. See
+   * FIELDS in the server for the ordering that guarantees it.
+   */
+  email?: string;
 }
 
-/** Which LeadInput keys a provider needs before it's worth calling. */
-export type InputRequirement = readonly (keyof LeadInput)[];
+/**
+ * Which LeadInput keys a provider needs before it's worth calling.
+ *
+ * A bare key is required. A nested array is an *alternative* group — at least
+ * one of its keys must be present. `[["linkedinUrl", "email"], "fullName"]`
+ * therefore reads "a profile URL or an email, plus a name". Vendors genuinely
+ * accept alternative identifiers, and an AND-only list would force every such
+ * adapter to either understate its needs (and burn a call it cannot serve) or
+ * overstate them (and never run).
+ */
+export type RequirementKey = keyof LeadInput;
+export type InputRequirement = readonly (RequirementKey | readonly RequirementKey[])[];
 
 export type AttemptOutcome =
   /** Provider returned a usable value. */
@@ -72,6 +89,12 @@ export interface EnrichProvider {
   readonly secretName: string;
   /** Vendor pricing page, surfaced in the settings UI next to the key input. */
   readonly signupUrl: string;
+  /**
+   * Shape of the secret, when it is not just an opaque key — Forager needs an
+   * account id alongside its key, so it is stored as `accountId:key`. Surfaced
+   * in settings; without it a user has no way to know the value is compound.
+   */
+  readonly keyFormat?: string;
   /** Minimum inputs needed. The runner skips the provider as "ineligible" otherwise. */
   requirements(field: EnrichField): InputRequirement;
   /** Resolve one field for one lead. Must never throw — map failures to an EnrichResult. */
