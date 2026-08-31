@@ -3,3 +3,20 @@
 # records "unconfigured" in the attempt ledger so you can see the gap.
 
 FINDYMAIL_API_KEY=
+LEADMAGIC_API_KEY=
+PROSPEO_API_KEY=
+WIZA_API_KEY=
+PEOPLEDATALABS_API_KEY=
+CONTACTOUT_API_KEY=
+BYTEMINE_API_KEY=
+
+# Forager puts the account id in the URL path, so its secret carries both:
+FORAGER_API_KEY=accountId:apiKey
+
+# Buying a key is not always the same as unlocking the API. Two to watch:
+#   Wiza     — plan credits (email/phone) and API credits are separate pools.
+#              A paid plan alone leaves /individual_reveals failing with
+#              fail_error "billing_issue"; the API draws on API credits, bought
+#              separately under Settings → API.
+#   LeadMagic — no API access on the free tier at all; a key can only be minted
+#              on an active paid plan.
