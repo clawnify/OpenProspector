@@ -4,7 +4,16 @@
 // review and is obvious in a test.
 
 import { describe, expect, it } from "vitest";
-import { checkDestination, safeHeaders, toCsv, pushVerdict, EXPORT_COLUMNS } from "./export";
+import {
+  checkDestination,
+  columnsFor,
+  safeHeaders,
+  toCsv,
+  toLinkedInCompanies,
+  toLinkedInContacts,
+  pushVerdict,
+  EXPORT_COLUMNS,
+} from "./export";
 
 describe("checkDestination", () => {
   it("accepts a normal public https endpoint", () => {
@@ -111,5 +120,92 @@ describe("pushVerdict", () => {
   it("reports other failures with the status so the user can act", () => {
     expect(pushVerdict(401)).toMatchObject({ ok: false, error: "Destination returned HTTP 401" });
     expect(pushVerdict(500)).toMatchObject({ ok: false, error: "Destination returned HTTP 500" });
+  });
+});
+
+// ── LinkedIn Matched Audiences ──────────────────────────────────────
+//
+// The header row is a contract with LinkedIn Campaign Manager's importer, which
+// rejects a file whose header does not match its template. These assertions are
+// transcribed from the template files LinkedIn hands out, so a well-meaning
+// tidy-up of the column names fails here rather than in someone's ad account.
+
+describe("LinkedIn export formats", () => {
+  const LEADS = [
+    {
+      full_name: "Ada Lovelace",
+      title: "Creative Director",
+      company: "Acme Studio",
+      domain: "acme.com",
+      email: "ada@acme.com",
+      location: "Amsterdam, Netherlands",
+      linkedin_url: "https://www.linkedin.com/in/ada-lovelace/",
+    },
+    {
+      full_name: "Grace Hopper",
+      title: "Head of Ops",
+      company: "Acme Studio",
+      domain: "www.acme.com",
+      email: "",
+      location: "Austin, Texas, US",
+      linkedin_url: "",
+    },
+  ];
+
+  it("emits LinkedIn's exact contact header", () => {
+    const csv = toCsv(toLinkedInContacts(LEADS), columnsFor("linkedin-contacts"));
+    expect(csv.split("\r\n")[0]).toBe(
+      "email,firstname,lastname,jobtitle,employeecompany,country,googleaid",
+    );
+  });
+
+  it("emits LinkedIn's exact company header", () => {
+    const csv = toCsv(toLinkedInCompanies(LEADS), columnsFor("linkedin-companies"));
+    expect(csv.split("\r\n")[0]).toBe(
+      "companyname,companywebsite,companyemaildomain,linkedincompanypageurl,stocksymbol,industry,city,state,companycountry,zipcode",
+    );
+  });
+
+  it("drops contacts with no email, since email is the only thing LinkedIn matches on", () => {
+    const rows = toLinkedInContacts(LEADS);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      email: "ada@acme.com",
+      firstname: "Ada",
+      lastname: "Lovelace",
+      jobtitle: "Creative Director",
+      employeecompany: "Acme Studio",
+      country: "Netherlands",
+      googleaid: "",
+    });
+  });
+
+  it("splits a three-part location into city, state and country", () => {
+    const rows = toLinkedInCompanies([LEADS[1]]);
+    expect(rows[0]).toMatchObject({ city: "Austin", state: "Texas", companycountry: "US" });
+  });
+
+  it("never puts a personal profile URL in the company-page column", () => {
+    const rows = toLinkedInCompanies(LEADS);
+    expect(rows.every((r) => r.linkedincompanypageurl === "")).toBe(true);
+  });
+
+  it("deduplicates companies across www and bare domains", () => {
+    const rows = toLinkedInCompanies(LEADS);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyname: "Acme Studio",
+      companywebsite: "https://acme.com",
+      companyemaildomain: "acme.com",
+    });
+  });
+
+  it("skips leads carrying neither a company name nor a domain", () => {
+    expect(toLinkedInCompanies([{ full_name: "Nobody", company: "", domain: "" }])).toHaveLength(0);
+  });
+
+  it("keeps a single-token name in firstname rather than dropping it", () => {
+    const rows = toLinkedInContacts([{ full_name: "Prince", email: "p@x.com" }]);
+    expect(rows[0]).toMatchObject({ firstname: "Prince", lastname: "" });
   });
 });

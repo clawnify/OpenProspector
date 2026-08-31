@@ -8,10 +8,24 @@
   },
   "api": {
     "public_routes": [
-      { "path": "/api/jobs/enrich", "methods": ["POST"] }
+      {
+        "path": "/api/jobs/enrich",
+        "methods": [
+          "POST"
+        ]
+      }
     ]
   },
   "env": {
-    "optional": ["FINDYMAIL_API_KEY"]
+    "optional": [
+      "FINDYMAIL_API_KEY",
+      "LEADMAGIC_API_KEY",
+      "WIZA_API_KEY",
+      "PEOPLEDATALABS_API_KEY",
+      "PROSPEO_API_KEY",
+      "CONTACTOUT_API_KEY",
+      "FORAGER_API_KEY",
+      "BYTEMINE_API_KEY"
+    ]
   }
 }

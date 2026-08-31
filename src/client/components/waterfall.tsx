@@ -74,7 +74,12 @@ export function WaterfallCard({
                 <Favicon domain={p.signup_url} size={14} />
                 <span className="flex-1 truncate text-sm font-medium">{p.label}</span>
 
-                {p.configured ? (
+                {p.status === "planned" ? (
+                  // Shown in position so the intended depth of the waterfall is
+                  // visible, but badged: the runner resolves ids against the
+                  // registry, so this vendor is never actually called.
+                  <Badge tone="warning">Planned</Badge>
+                ) : p.configured ? (
                   typeof p.credits_remaining === "number" ? (
                     <Chip>
                       <span className="data">{p.credits_remaining.toLocaleString()}</span> credits

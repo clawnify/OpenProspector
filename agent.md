@@ -35,7 +35,13 @@ unreported task looks identical to a dead one.
 3. **Identify the person, not just the company.** A company with no named
    contact cannot be enriched. Get a full name and the company's bare domain
    (`acme.com`, not `https://www.acme.com/about`) — those two fields are what
-   every provider needs.
+   the email providers need.
+
+   **Also get the person's professional profile URL whenever you can.** It is
+   not a nice-to-have: several phone vendors key *only* on a profile URL or a
+   work email, and two of them can resolve an email from nothing else. A row
+   with a profile URL reaches every provider in both waterfalls; a row without
+   one is skipped by several of them before a single credit is spent.
 4. **Record why each lead qualifies.** Every row takes `evidence` (one line:
    *"Posted a Head of Compliance role on 12 Jul"*) and `source_url`. A list
    without citations is unauditable and the user cannot act on it.
@@ -102,7 +108,7 @@ be lower than what you sent; the difference is the unenrichable rows.
 | `POST /api/leads/{id}/enrich` | One lead. Cache by default (**free**); `?refresh=true` re-buys and always costs. |
 | `GET /api/providers?credits=true` | Which vendors are configured and their remaining balances. |
 | `PUT /api/waterfall/{field}` | Reorder the `email` or `phone` waterfall. |
-| `GET /api/export/leads.csv` | Hand the user a file. **Don't call this to read data** — it returns up to 1000 rows and will flood your context; use `GET /api/leads` instead. |
+| `GET /api/export/leads.csv` | Hand the user a file. **Don't call this to read data** — it returns up to 1000 rows and will flood your context; use `GET /api/leads` instead. Add `?format=linkedin-contacts` or `?format=linkedin-companies` when the user wants a LinkedIn Matched Audiences upload; the company list is deduplicated for them. |
 | `POST /api/export/push` | Send leads to a CRM/sequencer the user names. `{ url, headers?, run_id?, only_with_email? }` — https only, public hosts only, redirects refused. |
 
 ## Reading the attempt log
@@ -111,7 +117,7 @@ be lower than what you sent; the difference is the unenrichable rows.
 |---|---|
 | `hit` | Provider returned a value; cost is in `credits_used`. |
 | `miss` | Provider ran, has no record. Normal — the waterfall moved on. |
-| `ineligible` | Lead lacked the inputs that provider needs, usually a domain. **Your** fix: source a better row. |
+| `ineligible` | Lead lacked the inputs that provider needs — usually a domain, or a missing profile URL on the phone waterfall. **Your** fix: source a better row. |
 | `unconfigured` | No API key for that vendor. Tell the user which key would have run. |
 | `no_credits` | Vendor balance exhausted; the user must top up. |
 | `error` | Vendor/transport failure. The waterfall continued to the next provider. |

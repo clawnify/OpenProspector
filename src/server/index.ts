@@ -3,11 +3,11 @@ import { enqueueJob, verifyDelivery } from "@clawnify/queue";
 import type { CredentialBinding } from "@clawnify/connections";
 import { get, query, run } from "./db.js";
 import { d1Cache, recordAttempts, runCredits } from "./cache.js";
-import { REGISTRY, runWaterfall, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
+import { REGISTRY, defaultOrder, runWaterfall, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
 import { plannedForField } from "./providers/planned.js";
-import { EXPORT_COLUMNS, toCsv, checkDestination, safeHeaders, pushVerdict } from "./export.js";
+import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
-import type { EnrichField, LeadInput } from "./providers/types.js";
+import type { EnrichField, LeadInput, WaterfallResult } from "./providers/types.js";
 
 type Env = {
   Bindings: {
@@ -141,16 +141,16 @@ function paging(q: { page?: string; limit?: string }) {
 }
 
 /**
- * The user's configured waterfall for a field, falling back to registry order.
- * Unknown ids are dropped here rather than in the runner so a vendor removed
- * from the registry can't wedge an existing config.
+ * The user's configured waterfall for a field, falling back to the shipping
+ * default for that field. Unknown ids are dropped here rather than in the runner
+ * so a vendor removed from the registry can't wedge an existing config.
  */
 async function waterfallOrder(field: EnrichField): Promise<string[]> {
   const row = await get<{ provider_order: string }>(
     "SELECT provider_order FROM waterfall_config WHERE field = ?",
     [field],
   );
-  const known = REGISTRY.filter((p) => p.fields.includes(field)).map((p) => p.id);
+  const known = defaultOrder(field);
   if (!row?.provider_order) return known;
   try {
     const parsed = JSON.parse(row.provider_order) as unknown;
@@ -188,6 +188,12 @@ const listProviders = createRoute({
                 signup_url: z.string(),
                 configured: z.boolean(),
                 status: z.enum(["available", "planned"]),
+                key_format: z.string().optional().openapi({
+                  description: "Shape of the secret when it is not an opaque key (e.g. Forager's 'accountId:apiKey')",
+                }),
+                blocked_by: z.string().optional().openapi({
+                  description: "Why a planned vendor is not shipped yet",
+                }),
                 credits_remaining: z.number().nullable().optional(),
               }),
             ),
@@ -224,6 +230,7 @@ app.openapi(listProviders, async (c) => {
         signup_url: p.signupUrl,
         configured,
         status: "available" as "available" | "planned",
+        ...(p.keyFormat ? { key_format: p.keyFormat } : {}),
         ...(wantCredits ? { credits_remaining: creditsRemaining ?? null } : {}),
       };
     }),
@@ -233,7 +240,9 @@ app.openapi(listProviders, async (c) => {
   // screen shows the intended waterfall depth per field; they carry
   // status:"planned" so the UI can badge them rather than imply they run.
   const plannedIds = new Set<string>();
-  const planned: typeof providers = [];
+  // Widened: only a planned vendor carries `blocked_by`, so the shipped rows'
+  // inferred shape does not include it.
+  const planned: ((typeof providers)[number] & { blocked_by?: string })[] = [];
   for (const f of FIELDS) {
     for (const pp of plannedForField(f)) {
       if (plannedIds.has(pp.id)) continue;
@@ -246,6 +255,7 @@ app.openapi(listProviders, async (c) => {
         signup_url: pp.homepage,
         configured: false,
         status: "planned" as const,
+        blocked_by: pp.blockedBy,
         ...(wantCredits ? { credits_remaining: null } : {}),
       });
     }
@@ -752,7 +762,44 @@ function leadInput(row: Record<string, unknown>): LeadInput {
     domain: String(row.domain || "") || undefined,
     company: String(row.company || "") || undefined,
     linkedinUrl: String(row.linkedin_url || "") || undefined,
+    // An email already on the row is an *input*, not just an output: most phone
+    // vendors key off an email or a profile URL rather than name + domain.
+    email: String(row.email || "") || undefined,
   };
+}
+
+/**
+ * Run every field's waterfall for one lead, feeding each field's result forward
+ * as an input to the next.
+ *
+ * The forwarding is the point. FIELDS resolves email before phone, and the
+ * phone vendors that key on a work email (LeadMagic, ContactOut, Wiza) are only
+ * reachable once that email exists — without this, a freshly sourced lead makes
+ * them all log `ineligible` and the phone column stays permanently empty.
+ */
+async function enrichFields(
+  base: LeadInput,
+  env: Parameters<typeof runWaterfall>[2],
+  orders: Record<EnrichField, string[]>,
+  opts: { refresh?: boolean } = {},
+): Promise<Record<EnrichField, WaterfallResult>> {
+  let input = base;
+  const results = {} as Record<EnrichField, WaterfallResult>;
+  for (const field of FIELDS) {
+    const res = await runWaterfall(field, input, env, {
+      order: orders[field],
+      cache: d1Cache,
+      refresh: opts.refresh,
+    });
+    results[field] = res;
+    if (field === "email" && res.value) input = { ...input, email: res.value };
+  }
+  return results;
+}
+
+/** Both waterfalls' configured order, read once per batch rather than per lead. */
+async function waterfallOrders(): Promise<Record<EnrichField, string[]>> {
+  return { email: await waterfallOrder("email"), phone: await waterfallOrder("phone") };
 }
 
 const startEnrich = createRoute({
@@ -857,23 +904,17 @@ app.post("/api/jobs/enrich", async (c) => {
     return c.json({ ok: true, done: true }, 200);
   }
 
-  const orders: Record<EnrichField, string[]> = {
-    email: await waterfallOrder("email"),
-    phone: await waterfallOrder("phone"),
-  };
+  const orders = await waterfallOrders();
 
   for (const lead of leads) {
     const id = String(lead.id);
     await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [id]);
-    const input = leadInput(lead);
     const updates: string[] = [];
     const params: unknown[] = [];
 
+    const results = await enrichFields(leadInput(lead), c.env, orders);
     for (const field of FIELDS) {
-      const res = await runWaterfall(field, input, c.env, {
-        order: orders[field],
-        cache: d1Cache,
-      });
+      const res = results[field];
       await recordAttempts(id, runId, res.attempts);
       if (res.value) {
         updates.push(`${field} = ?`, `${field}_verified = ?`, `${field}_provider = ?`);
@@ -944,12 +985,9 @@ app.openapi(reEnrichLead, async (c) => {
   // contact we already own.
   const refresh = c.req.valid("query").refresh === "true";
 
+  const results = await enrichFields(input, c.env, await waterfallOrders(), { refresh });
   for (const field of FIELDS) {
-    const res = await runWaterfall(field, input, c.env, {
-      order: await waterfallOrder(field),
-      cache: d1Cache,
-      refresh,
-    });
+    const res = results[field];
     if (res.cached) anyCached = true;
     await recordAttempts(id, lead.run_id ? String(lead.run_id) : null, res.attempts);
     credits += res.totalCredits;
@@ -986,6 +1024,10 @@ const exportCsv = createRoute({
     query: z.object({
       run_id: z.string().optional(),
       only_with_email: z.string().optional().openapi({ description: "'true' to skip leads with no resolved email" }),
+      format: z.enum(["leads", "linkedin-contacts", "linkedin-companies"]).optional().openapi({
+        description:
+          "'leads' (default) is the full record. 'linkedin-contacts' and 'linkedin-companies' emit the exact header rows LinkedIn Campaign Manager expects for a Matched Audiences list upload — contacts are matched on email, companies on name/website/email domain and are deduplicated across the whole result, not just this page.",
+      }),
       limit: z.string().optional().openapi({ description: `Rows per call (default ${EXPORT_MAX}, max ${EXPORT_MAX})` }),
       offset: z.string().optional(),
     }),
@@ -997,6 +1039,7 @@ const exportCsv = createRoute({
 
 app.openapi(exportCsv, async (c) => {
   const q = c.req.valid("query");
+  const format = q.format ?? "leads";
   const limit = Math.min(EXPORT_MAX, Math.max(1, parseInt(q.limit || String(EXPORT_MAX), 10) || EXPORT_MAX));
   const offset = Math.max(0, parseInt(q.offset || "0", 10) || 0);
 
@@ -1006,17 +1049,36 @@ app.openapi(exportCsv, async (c) => {
     where.push("run_id = ?");
     params.push(q.run_id);
   }
-  if (q.only_with_email === "true") where.push("email != ''");
+  // A LinkedIn contact list is matched on email alone, so a row without one is
+  // not a weak match but no match — filter it in SQL rather than emitting the
+  // row and dropping it after it has already consumed a page slot.
+  if (q.only_with_email === "true" || format === "linkedin-contacts") where.push("email != ''");
   const whereSQL = where.length ? " WHERE " + where.join(" AND ") : "";
 
-  const rows = await query<Record<string, unknown>>(
-    `SELECT ${EXPORT_COLUMNS.join(", ")} FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`,
-    [...params, limit, offset],
-  );
+  let rows: Record<string, unknown>[];
+  if (format === "linkedin-companies") {
+    // Grouped in SQL, not in JS, so the deduplication holds across pages. Doing
+    // it after LIMIT would emit the same account once per page it appears on.
+    rows = await query<Record<string, unknown>>(
+      `SELECT company, domain, MIN(location) AS location
+         FROM leads${whereSQL}
+        GROUP BY CASE WHEN domain != '' THEN lower(replace(domain, 'www.', '')) ELSE lower(company) END
+        HAVING company != '' OR domain != ''
+        ORDER BY company, domain
+        LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
+    );
+  } else {
+    rows = await query<Record<string, unknown>>(
+      `SELECT ${EXPORT_COLUMNS.join(", ")} FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
+    );
+  }
 
-  return c.body(toCsv(rows, EXPORT_COLUMNS), 200, {
+  const columns = columnsFor(format);
+  return c.body(toCsv(toExportRows(format, rows), columns), 200, {
     "Content-Type": "text/csv; charset=utf-8",
-    "Content-Disposition": `attachment; filename="leads-${offset}.csv"`,
+    "Content-Disposition": `attachment; filename="${format}-${offset}.csv"`,
   });
 });
 

@@ -123,7 +123,10 @@ export function Settings({
   cacheDays: number;
   onReorder: (field: string, order: string[]) => void;
 }) {
-  const missing = providers.filter((p) => !p.configured);
+  // Only shipped adapters count towards "configured": a planned vendor has no
+  // key to set, so counting it would make the ratio permanently unfinishable.
+  const shipped = providers.filter((p) => p.status !== "planned");
+  const missing = shipped.filter((p) => !p.configured);
 
   return (
     <>
@@ -141,7 +144,7 @@ export function Settings({
 
       <Card className="mb-6">
         <Zone>
-          <Eyebrow right={`${providers.length - missing.length}/${providers.length} configured`}>Provider keys</Eyebrow>
+          <Eyebrow right={`${shipped.length - missing.length}/${shipped.length} configured`}>Provider keys</Eyebrow>
           <p className="mt-1.5 text-xs text-muted">
             Keys are read from the platform's secret store, never held by this app. Every provider is optional — the
             waterfall skips any vendor without a key and records it in the attempt log, so gaps are visible rather than
@@ -151,9 +154,22 @@ export function Settings({
         {providers.map((p) => (
           <div key={p.id} className="flex items-center gap-3 border-b border-border px-4 py-2.5 last:border-b-0">
             <Favicon domain={p.signup_url} size={14} />
-            <span className="flex-1 text-sm font-medium">{p.label}</span>
-            <Chip>{p.secret_name}</Chip>
-            {p.configured ? (
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm font-medium">{p.label}</span>
+              {/* Visible rather than a title tooltip: a tooltip is unreachable
+                  by keyboard and screen reader, and "why can't I use this?" is
+                  the only question this row has to answer. */}
+              {p.blocked_by ? <span className="block text-xs text-muted">{p.blocked_by}</span> : null}
+            </span>
+            {/* The key's shape, where it is not just an opaque token. Without
+                this a compound secret looks like a normal key and fails at the
+                first call with a message the user never sees. */}
+            <Chip>{p.status === "planned" ? "—" : (p.key_format ?? p.secret_name)}</Chip>
+            {p.status === "planned" ? (
+              // No key field, because a key would not make it run. The badge is
+              // what keeps the roadmap from reading as a shipped capability.
+              <Badge tone="warning">Planned</Badge>
+            ) : p.configured ? (
               typeof p.credits_remaining === "number" ? (
                 <Badge tone="success">
                   <span className="data">{p.credits_remaining.toLocaleString()}</span> credits
