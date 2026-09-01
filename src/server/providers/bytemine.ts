@@ -1,3 +1,8 @@
+// PARKED — not in REGISTRY. The vendor's endpoint stopped serving TLS for
+// api.bytemine.ai on 2026-09-01; see the `bytemine` entry in planned.ts for the
+// evidence. The file and its mapping tests are kept so that reviving it is one
+// line back into REGISTRY rather than a rewrite.
+//
 // Bytemine adapter — mobile, plus email from a LinkedIn URL.
 //
 // Contract verified against Bytemine's own OpenAPI 3.1 document

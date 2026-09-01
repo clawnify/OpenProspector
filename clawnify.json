@@ -30,8 +30,7 @@
       "PROSPEO_API_KEY",
       "APOLLO_API_KEY",
       "CONTACTOUT_API_KEY",
-      "FORAGER_API_KEY",
-      "BYTEMINE_API_KEY"
+      "FORAGER_API_KEY"
     ]
   }
 }

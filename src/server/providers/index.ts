@@ -21,7 +21,6 @@ import type {
 } from "./types";
 import { AnymailFinderProvider } from "./anymailfinder";
 import { ApolloProvider } from "./apollo";
-import { BytemineProvider } from "./bytemine";
 import { ContactOutProvider } from "./contactout";
 import { DatagmaProvider } from "./datagma";
 import { FindymailProvider } from "./findymail";
@@ -53,7 +52,6 @@ export const REGISTRY: readonly EnrichProvider[] = [
   PeopleDataLabsProvider,
   ContactOutProvider,
   ForagerProvider,
-  BytemineProvider,
 ];
 
 /**
@@ -94,7 +92,6 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
     "peopledatalabs",
     "contactout",
     "forager",
-    "bytemine",
   ],
   // Phone runs deeper, and leads with the vendors whose mobile coverage is the
   // product rather than a side line. Prospeo is last of the finders because a
@@ -103,7 +100,7 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
   // price a mobile at five or more, because mobile coverage is its product
   // rather than a side line — and because it reports its own `creditBurn` per
   // call, so its real cost lands in the ledger instead of an assumption.
-  phone: ["bytemine", "forager", "peopledatalabs", "datagma", "leadmagic", "wiza", "contactout", "prospeo"],
+  phone: ["forager", "peopledatalabs", "datagma", "leadmagic", "wiza", "contactout", "prospeo"],
 };
 
 /** The shipping default for one field, filtered to adapters that can serve it. */

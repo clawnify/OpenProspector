@@ -100,6 +100,12 @@ export const TombaProvider: EnrichProvider = {
       outcome: "hit",
       value: data.email,
       verified: verification === "valid",
+      // Tomba documents that a failed lookup is free, so a miss above costs
+      // nothing. What is *not* documented precisely is whether "pay only for
+      // valid emails" excludes a catch-all hit as well, the way Datagma's does.
+      // Charging 1 here is therefore the pessimistic reading: over-reporting
+      // spend is safe against the ledger, where under-reporting would let a run
+      // quietly outspend its budget. Pin it against a real key before changing.
       creditsUsed: 1,
       detail: verification === "valid" ? undefined : `Tomba verification: ${verification || "unknown"}`,
     };

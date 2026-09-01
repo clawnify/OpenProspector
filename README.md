@@ -48,7 +48,6 @@ Every adapter is written against the vendor's own published contract, and its re
 | 11 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
 | 12 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
 | 13 | **Forager** | 1 credit | graded | profile URL |
-| 14 | **Bytemine** | 1 credit | graded | profile URL |
 
 Positions 3–7 are grouped deliberately: **each of those vendors bills only when it actually returns an address**, so an attempt that misses costs nothing. A vendor that is free to try belongs ahead of one that charges whether or not it resolves. Apollo sits behind them because it charges on a match even when the address it returns is a `guessed` one.
 
@@ -56,14 +55,13 @@ Positions 3–7 are grouped deliberately: **each of those vendors bills only whe
 
 | # | Provider | Cost on a hit | Needs |
 |---|----------|---------------|-------|
-| 1 | **Bytemine** | 1 credit | profile URL, email, or name + domain |
-| 2 | **Forager** | 1 credit | profile URL |
-| 3 | **People Data Labs** | 1 match | profile URL, email, or name + company |
-| 4 | **Datagma** | as reported per call | profile URL, email, or name + company |
-| 5 | **LeadMagic** | 5 credits | profile URL **or work email** |
-| 6 | **Wiza** | ~5 credits | profile URL, email, or name + company |
-| 7 | **ContactOut** | 2 credits | profile URL, email, or name + company |
-| 8 | **Prospeo** | 10 credits | profile URL, email, or name + company |
+| 1 | **Forager** | 1 credit | profile URL |
+| 2 | **People Data Labs** | 1 match | profile URL, email, or name + company |
+| 3 | **Datagma** | as reported per call | profile URL, email, or name + company |
+| 4 | **LeadMagic** | 5 credits | profile URL **or work email** |
+| 5 | **Wiza** | ~5 credits | profile URL, email, or name + company |
+| 6 | **ContactOut** | 2 credits | profile URL, email, or name + company |
+| 7 | **Prospeo** | 10 credits | profile URL, email, or name + company |
 
 Datagma prefers a **mobile** over a switchboard number and reports its own `creditBurn` on every call, so its real cost lands in the ledger rather than an assumed list price.
 
@@ -73,7 +71,7 @@ Phone credits cost meaningfully more than email — Prospeo prices a mobile at *
 
 ### Not shipped
 
-Five of these share one blocker, and it is worth stating once: **their enrichment API does not answer in the same request.** You POST, you get an id, and the result arrives later by webhook or by polling. This waterfall is synchronous by necessity: it decides whether to spend a credit at the next vendor based on whether this one resolved the field, so it cannot proceed without an answer in-band. Supporting any of them is one deferred feature (a pending-enrichment table, a public callback route, out-of-band lead and ledger writes) that would unlock the whole list at once, which is why they are recorded together rather than each half-built.
+Most of these share one blocker, and it is worth stating once: **their enrichment API does not answer in the same request.** You POST, you get an id, and the result arrives later by webhook or by polling. This waterfall is synchronous by necessity: it decides whether to spend a credit at the next vendor based on whether this one resolved the field, so it cannot proceed without an answer in-band. Supporting any of them is one deferred feature (a pending-enrichment table, a public callback route, out-of-band lead and ledger writes) that would unlock the whole list at once, which is why they are recorded together rather than each half-built.
 
 | Provider | Why |
 |----------|-----|
@@ -82,7 +80,8 @@ Five of these share one blocker, and it is worth stating once: **their enrichmen
 | Surfe | Enrichment returns an `enrichmentID` immediately; results arrive by polling or webhook. |
 | Snov.io | Task-based: a POST to `/start` returns a `task_hash`, and the result is fetched from `/result`. |
 | Zeliq | Both enrichment endpoints require a `callback_url` and deliver only as a webhook, minutes later. There is no synchronous mode. |
-| Kaspr | The odd one out. Kaspr *is* synchronous and self-serve, so it is not blocked by the above. What is missing is the contract: its request is documented, but its response schema is not published anywhere retrievable (the reference renders client-side and the developer docs host does not respond). Guessing which field holds the email and which the mobile reads as "Kaspr never has data for anyone" rather than as a bug. It needs one live call against a real key to pin, then it is a normal adapter. |
+| Bytemine | Shipped once, now parked. `api.bytemine.ai` is a CNAME onto an AWS API Gateway custom domain that stopped serving TLS for that hostname on 2026-09-01: against the same IP in the same second, the gateway's own SNI name completes a TLS 1.3 handshake while `api.bytemine.ai` gets alert 40. Server-side and client-independent, reproduced from three TLS stacks. The adapter and its tests are kept, so reviving it is one line once the handshake works again. |
+| Kaspr | The second odd one out. Kaspr *is* synchronous and self-serve, so it is not blocked by the above. What is missing is the contract: its request is documented, but its response schema is not published anywhere retrievable (the reference renders client-side and the developer docs host does not respond). Guessing which field holds the email and which the mobile reads as "Kaspr never has data for anyone" rather than as a bug. It needs one live call against a real key to pin, then it is a normal adapter. |
 
 **Apollo ships for email only**, for the same structural reason: `reveal_phone_number` requires a `webhook_url`, and Apollo documents that the phone numbers are delivered to it asynchronously. Declaring `phone` on that adapter would produce a provider that is always called, always charged, and never resolves.
 
