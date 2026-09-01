@@ -1,7 +1,8 @@
 // The leads table. Every enriched cell carries its provider attribution, so
 // "where did this email come from?" is answerable without opening anything.
 
-import { Check, Download, Loader2, RefreshCw, Search } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Download, Loader2, RefreshCw, Search } from "lucide-react";
 import { Badge, Button, Card, Chip, Empty, Eyebrow, Favicon, Zone } from "./ui";
 import type { Lead, Provider } from "../api";
 
@@ -22,6 +23,92 @@ function StatusBadge({ lead }: { lead: Lead }) {
     </Badge>
   ) : (
     <Badge tone="warning">No match</Badge>
+  );
+}
+
+/**
+ * The export formats, in the order they are offered.
+ *
+ * The LinkedIn shapes are not a different view of the same file: each emits the
+ * exact header row Campaign Manager's importer expects, and Campaign Manager
+ * rejects the upload outright if the headers do not match. That contract lives
+ * server-side in export.ts — this menu only names the formats, so the two can
+ * never drift into two different opinions about the columns.
+ */
+const EXPORT_FORMATS = [
+  {
+    format: "leads",
+    label: "Full lead records",
+    hint: "Every column, including provider attribution and cost",
+  },
+  {
+    format: "linkedin-contacts",
+    label: "LinkedIn contact audience",
+    hint: "Matched on email; leads without one are left out",
+  },
+  {
+    format: "linkedin-companies",
+    label: "LinkedIn company audience",
+    hint: "One row per company, deduplicated across all pages",
+  },
+] as const;
+
+/**
+ * Export as a menu rather than a single button.
+ *
+ * The LinkedIn formats have been served by the API since it shipped, but the
+ * only way to reach them was to hand-edit the download URL — so in practice the
+ * feature did not exist for anyone using the app. A picker is the whole fix.
+ */
+function ExportMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const href = (format: string) => `/api/export/leads.csv?format=${format}`;
+
+  return (
+    <div className="relative" ref={ref}>
+      <Button onClick={() => setOpen((v) => !v)}>
+        <Download size={13} /> Export CSV
+        <ChevronDown size={13} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+      </Button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface shadow-lg"
+        >
+          {EXPORT_FORMATS.map((f) => (
+            <a
+              key={f.format}
+              role="menuitem"
+              href={href(f.format)}
+              download
+              onClick={() => setOpen(false)}
+              className="block border-b border-border px-3 py-2 last:border-b-0 hover:bg-sunken"
+            >
+              <span className="block text-sm text-foreground">{f.label}</span>
+              <span className="block text-xs text-faint">{f.hint}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -67,11 +154,7 @@ export function LeadsTable({
               className="w-full rounded-md border border-border bg-surface py-1.5 pl-8 pr-3 text-sm placeholder:text-faint"
             />
           </div>
-          <a href="/api/export/leads.csv" download>
-            <Button>
-              <Download size={13} /> Export CSV
-            </Button>
-          </a>
+          <ExportMenu />
         </div>
       </Zone>
 

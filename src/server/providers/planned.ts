@@ -23,30 +23,99 @@ export interface PlannedProvider {
 }
 
 /**
- * Zeliq is the one vendor in the roadmap this app cannot currently adapt, and
- * the reason is structural rather than unfinished work.
+ * Vendors we researched, could not adapt, and the structural reason why.
  *
- * Both of its enrichment endpoints (`/contact/enrich/email` and
- * `/contact/enrich/phone`) mark `callback_url` as **required** and deliver the
- * result only as a webhook POST, minutes later, with retries backing off for
- * over an hour. There is no synchronous mode. Every other vendor here answers
- * in the same request.
+ * All but one share a single blocker, and it is worth naming once: **their
+ * enrichment API does not answer in the same request.** You POST, you get an
+ * id, and the result arrives later by webhook or by polling. The waterfall
+ * runner is synchronous by necessity — it decides whether to spend a credit at
+ * the next vendor based on whether this one resolved the field, so it cannot
+ * proceed without an answer in-band.
  *
- * The waterfall runner is synchronous by necessity: it decides whether to spend
- * a credit at the next vendor based on whether this one resolved the field, so
- * it cannot proceed without an answer. Supporting Zeliq therefore is not an
- * adapter — it is a second, deferred execution path (a pending-enrichment
- * table, a public callback route with its own token, and out-of-band lead and
- * ledger writes). That is a deliberate feature, not a line in a registry, so it
- * is recorded here rather than half-built.
+ * Supporting any of them is therefore not an adapter, it is a second execution
+ * path: a pending-enrichment table, a public callback route with its own token,
+ * and out-of-band lead and ledger writes. That is one deferred feature that
+ * would unlock this whole list at once, which is exactly why they are recorded
+ * together rather than each half-built.
  */
 export const PLANNED: readonly PlannedProvider[] = [
+  {
+    id: "dropcontact",
+    label: "Dropcontact",
+    fields: ["email"],
+    homepage: "https://www.dropcontact.com",
+    blockedBy: "Batch-only API — POST returns a request id, results fetched by a later GET",
+  },
+  {
+    id: "rocketreach",
+    label: "RocketReach",
+    fields: ["email", "phone"],
+    homepage: "https://rocketreach.co",
+    blockedBy: "Lookups return `searching`/`waiting` and complete out of band — needs polling or a webhook",
+  },
+  {
+    id: "surfe",
+    label: "Surfe",
+    fields: ["email", "phone"],
+    homepage: "https://www.surfe.com",
+    blockedBy: "Enrichment returns an enrichmentID immediately; results come by polling or webhook",
+  },
+  {
+    id: "snov",
+    label: "Snov.io",
+    fields: ["email"],
+    homepage: "https://snov.io",
+    blockedBy: "Task-based API — POST to /start returns a task_hash, result fetched from /result",
+  },
   {
     id: "zeliq",
     label: "Zeliq",
     fields: ["email", "phone"],
     homepage: "https://zeliq.com",
-    blockedBy: "Webhook-only API — needs a deferred enrichment path, not an adapter",
+    blockedBy: "Webhook-only API — `callback_url` is required and there is no synchronous mode",
+  },
+  {
+    id: "bytemine",
+    label: "Bytemine",
+    fields: ["email", "phone"],
+    homepage: "https://www.bytemine.ai",
+    // Parked, not abandoned. This one shipped and its adapter still exists in
+    // bytemine.ts with its mapping tests, because the mapping is fine — what
+    // broke is the vendor's endpoint.
+    //
+    // `api.bytemine.ai` is a CNAME onto an AWS API Gateway custom domain, and
+    // the gateway now answers TLS alert 40 (handshake_failure) for that SNI
+    // name. Isolated to the hostname on 2026-09-01: against the same IP, in the
+    // same second, SNI `7w80ki5932.execute-api.us-east-2.amazonaws.com`
+    // completes a TLS 1.3 handshake with a valid Amazon certificate while SNI
+    // `api.bytemine.ai` is refused. That is API Gateway's signature for a
+    // custom domain with no certificate mapped, so it is server-side and
+    // client-independent — reproduced from OpenSSL 3.6.3, LibreSSL and workerd.
+    //
+    // It was left in the registry at first, on the reasoning that it was a
+    // pre-existing failure and not ours to change. That was wrong: a vendor in
+    // REGISTRY is advertised in settings as available, with a link to its
+    // pricing page, so keeping it there invites a user to go and pay for an API
+    // that cannot be called. Declaring it is the honest state, and reviving it
+    // is one line back into REGISTRY once the handshake succeeds again.
+    blockedBy: "Vendor endpoint unreachable since 2026-09-01 — api.bytemine.ai has no TLS certificate mapped",
+  },
+  {
+    id: "kaspr",
+    label: "Kaspr",
+    fields: ["email", "phone"],
+    homepage: "https://www.kaspr.io",
+    // The odd one out: Kaspr is synchronous and self-serve, so it is not blocked
+    // by the deferred path above. What is missing is the contract. Its request
+    // is documented (POST https://api.developers.kaspr.io/profile/linkedin, an
+    // Authorization header plus `accept-version: v2.0`, body `{ name, id }`),
+    // but its response schema is not published anywhere retrievable — the
+    // Stoplight reference renders client-side and the developer docs host does
+    // not respond. Writing the mapping would mean guessing which field holds
+    // the work email and which holds the mobile, and a wrong guess here reads
+    // as "Kaspr never has data for anyone" rather than as a bug. It needs one
+    // live call against a real key to pin, and then it is a normal adapter.
+    blockedBy: "Response schema not publicly documented — needs one live call against a real key to pin",
   },
 ];
 

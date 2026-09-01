@@ -20,12 +20,17 @@
     "optional": [
       "FINDYMAIL_API_KEY",
       "LEADMAGIC_API_KEY",
+      "ANYMAILFINDER_API_KEY",
+      "HUNTER_API_KEY",
+      "SKRAPP_API_KEY",
+      "TOMBA_API_KEY",
+      "DATAGMA_API_KEY",
       "WIZA_API_KEY",
       "PEOPLEDATALABS_API_KEY",
       "PROSPEO_API_KEY",
+      "APOLLO_API_KEY",
       "CONTACTOUT_API_KEY",
-      "FORAGER_API_KEY",
-      "BYTEMINE_API_KEY"
+      "FORAGER_API_KEY"
     ]
   }
 }

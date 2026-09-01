@@ -8,10 +8,17 @@ PROSPEO_API_KEY=
 WIZA_API_KEY=
 PEOPLEDATALABS_API_KEY=
 CONTACTOUT_API_KEY=
-BYTEMINE_API_KEY=
+HUNTER_API_KEY=
+APOLLO_API_KEY=
+ANYMAILFINDER_API_KEY=
+SKRAPP_API_KEY=
+DATAGMA_API_KEY=
 
-# Forager puts the account id in the URL path, so its secret carries both:
+# Two vendors need more than one opaque token, so their secrets are compound:
+#   Forager puts the account id in the URL path.
 FORAGER_API_KEY=accountId:apiKey
+#   Tomba authenticates with two headers, X-Tomba-Key and X-Tomba-Secret.
+TOMBA_API_KEY=key:secret
 
 # Buying a key is not always the same as unlocking the API. Two to watch:
 #   Wiza     — plan credits (email/phone) and API credits are separate pools.
@@ -20,3 +27,6 @@ FORAGER_API_KEY=accountId:apiKey
 #              separately under Settings → API.
 #   LeadMagic — no API access on the free tier at all; a key can only be minted
 #              on an active paid plan.
+#   Apollo   — the key works on the free plan, but only for email. Its phone
+#              numbers are delivered to a webhook, so this app never asks for
+#              them; see the note at the top of providers/apollo.ts.

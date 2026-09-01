@@ -19,13 +19,18 @@ import type {
   RequirementKey,
   WaterfallResult,
 } from "./types";
-import { BytemineProvider } from "./bytemine";
+import { AnymailFinderProvider } from "./anymailfinder";
+import { ApolloProvider } from "./apollo";
 import { ContactOutProvider } from "./contactout";
+import { DatagmaProvider } from "./datagma";
 import { FindymailProvider } from "./findymail";
 import { ForagerProvider } from "./forager";
+import { HunterProvider } from "./hunter";
 import { LeadMagicProvider } from "./leadmagic";
 import { PeopleDataLabsProvider } from "./peopledatalabs";
 import { ProspeoProvider } from "./prospeo";
+import { SkrappProvider } from "./skrapp";
+import { TombaProvider } from "./tomba";
 import { WizaProvider } from "./wiza";
 
 /**
@@ -36,12 +41,17 @@ import { WizaProvider } from "./wiza";
 export const REGISTRY: readonly EnrichProvider[] = [
   FindymailProvider,
   LeadMagicProvider,
-  WizaProvider,
-  PeopleDataLabsProvider,
+  AnymailFinderProvider,
+  HunterProvider,
+  SkrappProvider,
+  TombaProvider,
+  DatagmaProvider,
   ProspeoProvider,
+  WizaProvider,
+  ApolloProvider,
+  PeopleDataLabsProvider,
   ContactOutProvider,
   ForagerProvider,
-  BytemineProvider,
 ];
 
 /**
@@ -61,11 +71,36 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
   // so its answer is a fallback rather than a stop.
   // Forager and Bytemine trail: both can only resolve an email from a LinkedIn
   // URL, so for a lead sourced without one they are a guaranteed skip.
-  email: ["findymail", "leadmagic", "prospeo", "wiza", "peopledatalabs", "contactout", "forager", "bytemine"],
+  // Anymail Finder, Hunter, Skrapp, Tomba and Datagma sit high for one shared
+  // reason: each of them bills only when it actually returns an address, so an
+  // attempt that misses is free. A vendor that costs nothing to try belongs
+  // ahead of one that charges whether or not it resolves.
+  // Apollo sits behind them because it charges on a match even when the address
+  // it hands back is a "guessed" one, and ahead of People Data Labs because it
+  // at least grades deliverability, which PDL never asserts at all.
+  email: [
+    "findymail",
+    "leadmagic",
+    "anymailfinder",
+    "hunter",
+    "skrapp",
+    "tomba",
+    "datagma",
+    "prospeo",
+    "wiza",
+    "apollo",
+    "peopledatalabs",
+    "contactout",
+    "forager",
+  ],
   // Phone runs deeper, and leads with the vendors whose mobile coverage is the
   // product rather than a side line. Prospeo is last of the finders because a
   // mobile there is 10 credits against 1–5 elsewhere.
-  phone: ["bytemine", "forager", "peopledatalabs", "leadmagic", "wiza", "contactout", "prospeo"],
+  // Datagma goes in behind the single-credit finders and ahead of the ones that
+  // price a mobile at five or more, because mobile coverage is its product
+  // rather than a side line — and because it reports its own `creditBurn` per
+  // call, so its real cost lands in the ledger instead of an assumption.
+  phone: ["forager", "peopledatalabs", "datagma", "leadmagic", "wiza", "contactout", "prospeo"],
 };
 
 /** The shipping default for one field, filtered to adapters that can serve it. */
