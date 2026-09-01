@@ -12,12 +12,18 @@
 // eligibility gate that decides whether the vendor is called at all.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AnymailFinderProvider } from "./anymailfinder";
+import { ApolloProvider } from "./apollo";
 import { BytemineProvider } from "./bytemine";
 import { ContactOutProvider } from "./contactout";
+import { DatagmaProvider } from "./datagma";
 import { ForagerProvider } from "./forager";
+import { HunterProvider } from "./hunter";
 import { LeadMagicProvider } from "./leadmagic";
 import { PeopleDataLabsProvider } from "./peopledatalabs";
 import { ProspeoProvider } from "./prospeo";
+import { SkrappProvider } from "./skrapp";
+import { TombaProvider } from "./tomba";
 import { POLL as WIZA_POLL, WizaProvider } from "./wiza";
 import type { EnrichProvider } from "./types";
 
@@ -321,6 +327,240 @@ describe("Bytemine", () => {
   it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(BytemineProvider));
 });
 
+describe("Hunter", () => {
+  it("sends the key as a header rather than on the query string", async () => {
+    stub([200, { data: { email: "ada@acme.com", score: 97, verification: { status: "valid" } } }]);
+    const r = await HunterProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].headers["X-API-KEY"]).toBe("k");
+    // A key on the query string leaks into logs and referrers.
+    expect(calls[0].url).not.toContain("k");
+    expect(calls[0].url).toContain("full_name=Ada+Lovelace");
+    expect(calls[0].url).toContain("domain=acme.com");
+  });
+
+  it("keeps an accept_all address as an unverified fallback", async () => {
+    stub([200, { data: { email: "ada@acme.com", verification: { status: "accept_all" } } }]);
+    const r = await HunterProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", verified: false });
+    expect(r.detail).toContain("accept_all");
+  });
+
+  it("charges nothing when there is no address", async () => {
+    stub([200, { data: { email: null } }]);
+    expect(await HunterProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  // The whole reason this adapter does not use the shared status mapping: for
+  // Hunter a 429 is a spent monthly plan, not a transient rate limit, and
+  // reporting it as a retryable error would hide why coverage collapsed.
+  it("reads a 429 as an exhausted quota, not a rate limit", async () => {
+    stub([429, {}]);
+    const r = await HunterProvider.find("email", LEAD, "k");
+    expect(r.outcome).toBe("no_credits");
+    expect(r.detail).toContain("quota");
+  });
+
+  it("treats a data-subject withdrawal as a miss, not an error to retry", async () => {
+    stub([451, { errors: [{ id: "claimed_email" }] }]);
+    expect(await HunterProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(HunterProvider));
+});
+
+describe("Apollo", () => {
+  it("puts match parameters on the query string, where Apollo reads them", async () => {
+    stub([200, { person: { email: "ada@acme.com", email_status: "verified" } }]);
+    const r = await ApolloProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].headers["x-api-key"]).toBe("k");
+    // Sending these as a JSON body is the silent failure: Apollo answers 200
+    // having matched on nothing.
+    expect(calls[0].body).toBeUndefined();
+    expect(calls[0].url).toContain("first_name=Ada");
+    expect(calls[0].url).toContain("domain=acme.com");
+  });
+
+  it("never asks for a phone, because that answer would arrive by webhook", async () => {
+    stub([200, { person: { email: "ada@acme.com", email_status: "verified" } }]);
+    await ApolloProvider.find("email", LEAD, "k");
+    expect(calls[0].url).not.toContain("reveal_phone_number");
+    expect(calls[0].url).not.toContain("run_waterfall");
+    expect(ApolloProvider.fields).toEqual(["email"]);
+  });
+
+  it("keeps a guessed address, but not as a verified one", async () => {
+    stub([200, { person: { email: "ada@acme.com", email_status: "guessed" } }]);
+    expect(await ApolloProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "hit", verified: false });
+  });
+
+  it("refuses to hand back an address Apollo already knows bounces", async () => {
+    stub([200, { person: { email: "ada@acme.com", email_status: "bounced" } }]);
+    expect(await ApolloProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", value: null });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(ApolloProvider));
+});
+
+describe("Anymail Finder", () => {
+  it("sends the bare key, with no Bearer prefix", async () => {
+    stub([200, { email: "ada@acme.com", email_status: "valid", credits_charged: 1 }]);
+    const r = await AnymailFinderProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].headers.Authorization).toBe("k");
+  });
+
+  it("records the price the vendor reports, so a free re-search costs nothing", async () => {
+    stub([200, { email: "ada@acme.com", email_status: "valid", credits_charged: 0 }]);
+    expect(await AnymailFinderProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "hit", creditsUsed: 0 });
+  });
+
+  it("keeps a risky address as an unverified fallback", async () => {
+    stub([200, { email: "ada@acme.com", email_status: "risky", credits_charged: 0 }]);
+    expect(await AnymailFinderProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "hit", verified: false });
+  });
+
+  it("does not surface a suppressed address as contactable", async () => {
+    stub([200, { email: "ada@acme.com", email_status: "blacklisted", credits_charged: 0 }]);
+    expect(await AnymailFinderProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", value: null });
+  });
+
+  it("reads a 402 as out of credits", async () => {
+    stub([402, {}]);
+    expect(await AnymailFinderProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "no_credits" });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(AnymailFinderProvider));
+});
+
+describe("Tomba", () => {
+  it("splits the compound secret across both auth headers", async () => {
+    stub([200, { data: { email: "ada@acme.com", score: 92, verification: { status: "valid" } } }]);
+    const r = await TombaProvider.find("email", LEAD, "ta_key:ts_secret");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].headers["X-Tomba-Key"]).toBe("ta_key");
+    expect(calls[0].headers["X-Tomba-Secret"]).toBe("ts_secret");
+  });
+
+  it("says the key is malformed instead of spending a call to find out", async () => {
+    stub([200, {}]);
+    const r = await TombaProvider.find("email", LEAD, "just-the-key");
+    expect(r.outcome).toBe("unconfigured");
+    expect(r.detail).toContain("key:secret");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("declares its compound key shape so settings can show it", () => {
+    expect(TombaProvider.keyFormat).toContain("key:secret");
+  });
+
+  it("treats an empty data object as a miss", async () => {
+    stub([200, { data: {} }]);
+    expect(await TombaProvider.find("email", LEAD, "a:b")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  // Verified against the live API: Tomba answers a bad key with a 400, not a
+  // 401, so mapping on status alone reports a wrong key as a broken vendor.
+  it("reads a rejected key out of the 400 body, not the status", async () => {
+    stub([400, { errors: { type: "authentication_failed", message: "Please enter a valid KEY.", code: 400 } }]);
+    const r = await TombaProvider.find("email", LEAD, "a:b");
+    expect(r).toMatchObject({ outcome: "unconfigured", creditsUsed: 0 });
+    expect(r.detail).toContain("rejected the API key");
+  });
+
+  it("still reports a genuine 400 as an error", async () => {
+    stub([400, { errors: { type: "invalid_parameter" } }]);
+    expect(await TombaProvider.find("email", LEAD, "a:b")).toMatchObject({ outcome: "error" });
+  });
+});
+
+describe("Skrapp", () => {
+  it("splits a full name into the separate parameters Skrapp requires", async () => {
+    stub([200, { email: "ada@acme.com", accuracy: 96, quality: { status: "valid", result: "deliverable" } }]);
+    const r = await SkrappProvider.find("email", { fullName: "Ada Lovelace", domain: "acme.com" }, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].headers["X-Access-Key"]).toBe("k");
+    expect(calls[0].url).toContain("firstName=Ada");
+    expect(calls[0].url).toContain("lastName=Lovelace");
+    // The finder is v2 even though the verifier is v3.
+    expect(calls[0].url).toContain("/api/v2/find");
+  });
+
+  it("will not guess at a one-word name", async () => {
+    stub([200, {}]);
+    const r = await SkrappProvider.find("email", { fullName: "Ada", domain: "acme.com" }, "k");
+    expect(r.outcome).toBe("ineligible");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("holds a valid-but-not-deliverable address as an unverified fallback", async () => {
+    stub([200, { email: "ada@acme.com", quality: { status: "valid", result: "catch-all" } }]);
+    expect(await SkrappProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "hit", verified: false });
+  });
+
+  it("reads a 404 as a free miss", async () => {
+    stub([404, {}]);
+    expect(await SkrappProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(SkrappProvider));
+});
+
+describe("Datagma", () => {
+  it("calls v8 of the finder, not the v6 its guide pages still show", async () => {
+    stub([200, { email: "ada@acme.com", smtpCheck: true, mxfound: true, cachAll: false }]);
+    const r = await DatagmaProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].url).toContain("/api/ingress/v8/findEmail");
+    expect(calls[0].url).toContain("apiId=k");
+  });
+
+  it("never sends the person's profile URL as linkedInSlug, which means the company", async () => {
+    stub([200, { email: "ada@acme.com", smtpCheck: true }]);
+    await DatagmaProvider.find("email", LEAD, "k");
+    expect(calls[0].url).not.toContain("linkedInSlug");
+  });
+
+  // `cachAll` is Datagma's own spelling. Reading the corrected name finds
+  // nothing, and every catch-all guess is then billed as a verified mailbox.
+  it("treats a catch-all guess as unverified and unbilled", async () => {
+    stub([200, { email: "ada@acme.com", smtpCheck: true, cachAll: true }]);
+    const r = await DatagmaProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", verified: false, creditsUsed: 0 });
+    expect(r.detail).toContain("Most probable");
+  });
+
+  it("prefers a mobile over a switchboard number and bills what creditBurn reports", async () => {
+    stub([200, {
+      phone: { mobiles: [{ value: "+15551234567" }], workPhones: [{ value: "+15550000000" }] },
+      creditBurn: 30,
+    }]);
+    const r = await DatagmaProvider.find("phone", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "+15551234567", verified: true, creditsUsed: 30 });
+    expect(calls[0].url).toContain("phoneFull=true");
+  });
+
+  it("falls back to a work number, but does not call it a direct line", async () => {
+    stub([200, { phone: { mobiles: [], workPhones: [{ value: "+15550000000" }] }, creditBurn: 5 }]);
+    const r = await DatagmaProvider.find("phone", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "+15550000000", verified: false, creditsUsed: 5 });
+  });
+
+  it("still records the spend when a phone lookup finds nothing", async () => {
+    stub([200, { phone: { mobiles: [], workPhones: [] }, creditBurn: 2 }]);
+    expect(await DatagmaProvider.find("phone", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 2 });
+  });
+
+  it("reads the credit balance the gateway serialises as a string", async () => {
+    stub([200, { currentCredit: "4200" }]);
+    expect(await DatagmaProvider.credits!("k")).toMatchObject({ remaining: 4200 });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(DatagmaProvider));
+});
+
 describe("every adapter", () => {
   const ALL = [
     LeadMagicProvider,
@@ -330,10 +570,17 @@ describe("every adapter", () => {
     ContactOutProvider,
     ForagerProvider,
     BytemineProvider,
+    HunterProvider,
+    ApolloProvider,
+    AnymailFinderProvider,
+    TombaProvider,
+    SkrappProvider,
+    DatagmaProvider,
   ];
 
-  // Forager's key is compound (`accountId:key`); everything else takes it raw.
-  const keyFor = (p: EnrichProvider) => (p.id === "forager" ? "1:k" : "k");
+  // Forager (`accountId:key`) and Tomba (`key:secret`) take compound secrets;
+  // everything else takes the key raw.
+  const keyFor = (p: EnrichProvider) => (p.id === "forager" || p.id === "tomba" ? "1:k" : "k");
 
   it("survives a vendor answering with HTML instead of JSON", async () => {
     for (const p of ALL) {

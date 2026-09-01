@@ -37,12 +37,20 @@ Every adapter is written against the vendor's own published contract, and its re
 |---|----------|---------------|-----------|-------|
 | 1 | **Findymail** | 1 credit | ✅ | name + domain |
 | 2 | **LeadMagic** | 1 credit | ✅ | name + domain/company |
-| 3 | **Prospeo** | 1 credit | ✅ | profile URL, email, or name + company |
-| 4 | **Wiza** | ~2 credits | graded | profile URL, email, or name + company |
-| 5 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
-| 6 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
-| 7 | **Forager** | 1 credit | graded | profile URL |
-| 8 | **Bytemine** | 1 credit | graded | profile URL |
+| 3 | **Anymail Finder** | 1 credit, **only when valid** | graded | profile URL, or name + company |
+| 4 | **Hunter** | 1 credit | graded (SMTP) | name + domain/company |
+| 5 | **Skrapp** | 1 credit | graded (SMTP) | name + domain/company |
+| 6 | **Tomba** | 1 credit | graded | name + domain/company |
+| 7 | **Datagma** | 1 credit, **only when verified** | graded (SMTP) | name + domain/company |
+| 8 | **Prospeo** | 1 credit | ✅ | profile URL, email, or name + company |
+| 9 | **Wiza** | ~2 credits | graded | profile URL, email, or name + company |
+| 10 | **Apollo** | 1 credit | graded | profile URL, email, or name + company |
+| 11 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
+| 12 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
+| 13 | **Forager** | 1 credit | graded | profile URL |
+| 14 | **Bytemine** | 1 credit | graded | profile URL |
+
+Positions 3–7 are grouped deliberately: **each of those vendors bills only when it actually returns an address**, so an attempt that misses costs nothing. A vendor that is free to try belongs ahead of one that charges whether or not it resolves. Apollo sits behind them because it charges on a match even when the address it returns is a `guessed` one.
 
 ### Phone waterfall
 
@@ -51,10 +59,13 @@ Every adapter is written against the vendor's own published contract, and its re
 | 1 | **Bytemine** | 1 credit | profile URL, email, or name + domain |
 | 2 | **Forager** | 1 credit | profile URL |
 | 3 | **People Data Labs** | 1 match | profile URL, email, or name + company |
-| 4 | **LeadMagic** | 5 credits | profile URL **or work email** |
-| 5 | **Wiza** | ~5 credits | profile URL, email, or name + company |
-| 6 | **ContactOut** | 2 credits | profile URL, email, or name + company |
-| 7 | **Prospeo** | 10 credits | profile URL, email, or name + company |
+| 4 | **Datagma** | as reported per call | profile URL, email, or name + company |
+| 5 | **LeadMagic** | 5 credits | profile URL **or work email** |
+| 6 | **Wiza** | ~5 credits | profile URL, email, or name + company |
+| 7 | **ContactOut** | 2 credits | profile URL, email, or name + company |
+| 8 | **Prospeo** | 10 credits | profile URL, email, or name + company |
+
+Datagma prefers a **mobile** over a switchboard number and reports its own `creditBurn` on every call, so its real cost lands in the ledger rather than an assumed list price.
 
 Phone credits cost meaningfully more than email — Prospeo prices a mobile at **10×** an email — which is why the phone waterfall runs deeper before giving up, and why ordering it well matters more.
 
@@ -62,13 +73,23 @@ Phone credits cost meaningfully more than email — Prospeo prices a mobile at *
 
 ### Not shipped
 
+Five of these share one blocker, and it is worth stating once: **their enrichment API does not answer in the same request.** You POST, you get an id, and the result arrives later by webhook or by polling. This waterfall is synchronous by necessity: it decides whether to spend a credit at the next vendor based on whether this one resolved the field, so it cannot proceed without an answer in-band. Supporting any of them is one deferred feature (a pending-enrichment table, a public callback route, out-of-band lead and ledger writes) that would unlock the whole list at once, which is why they are recorded together rather than each half-built.
+
 | Provider | Why |
 |----------|-----|
-| Zeliq | Both of its enrichment endpoints require a `callback_url` and deliver the result only as a webhook, minutes later. There is no synchronous mode. Supporting it is a second, deferred execution path — a pending-enrichment table, a public callback route, out-of-band lead writes — not an adapter, so it is left declared rather than half-built. |
+| Dropcontact | Batch-only API: a POST returns a request id, and results are fetched by a later GET. |
+| RocketReach | Lookups come back `searching` / `waiting` and complete out of band, needing polling or a webhook. |
+| Surfe | Enrichment returns an `enrichmentID` immediately; results arrive by polling or webhook. |
+| Snov.io | Task-based: a POST to `/start` returns a `task_hash`, and the result is fetched from `/result`. |
+| Zeliq | Both enrichment endpoints require a `callback_url` and deliver only as a webhook, minutes later. There is no synchronous mode. |
+| Kaspr | The odd one out. Kaspr *is* synchronous and self-serve, so it is not blocked by the above. What is missing is the contract: its request is documented, but its response schema is not published anywhere retrievable (the reference renders client-side and the developer docs host does not respond). Guessing which field holds the email and which the mobile reads as "Kaspr never has data for anyone" rather than as a bug. It needs one live call against a real key to pin, then it is a normal adapter. |
+
+**Apollo ships for email only**, for the same structural reason: `reveal_phone_number` requires a `webhook_url`, and Apollo documents that the phone numbers are delivered to it asynchronously. Declaring `phone` on that adapter would produce a provider that is always called, always charged, and never resolves.
 
 ### Two keys that are not a plain token
 
 - **Forager** puts the account id in the URL path, so its secret is stored as `FORAGER_API_KEY=accountId:apiKey`.
+- **Tomba** authenticates with two headers (`X-Tomba-Key` and `X-Tomba-Secret`), so its secret is stored as `TOMBA_API_KEY=key:secret`.
 - Every other vendor takes an opaque key. The settings screen shows the expected shape next to each field.
 
 ### Adding a provider
@@ -147,6 +168,12 @@ Every provider is optional. With no keys at all the app still runs — the water
 pnpm test        # waterfall ordering, eligibility, cache and TTL behaviour
 pnpm typecheck
 pnpm build
+
+# Opt-in, and not part of CI: calls every adapter against the real vendor with a
+# deliberately invalid key. Spends nothing, and proves the half a stubbed test
+# cannot see: that the host, path, API version and auth header are right, rather
+# than only that the response mapping is.
+LIVE_PROVIDER_CHECK=1 pnpm test
 ```
 
 ## API
