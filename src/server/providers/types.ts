@@ -49,7 +49,14 @@ export type AttemptOutcome =
   /** Out of credits at the vendor. Surfaced to the user, not silently swallowed. */
   | "no_credits"
   /** Transport/HTTP/parse failure. Waterfall continues to the next provider. */
-  | "error";
+  | "error"
+  /**
+   * Provider accepted the lookup but answers out of band, by POSTing to the
+   * callback URL it was given. The waterfall pauses at this position and
+   * resumes when the callback lands (or its timeout sweep fires); the ledger
+   * then gets a second row with the real outcome and cost.
+   */
+  | "pending";
 
 /** One provider's answer for one lead and one field. */
 export interface EnrichResult {
@@ -65,6 +72,19 @@ export interface EnrichResult {
   creditsUsed: number;
   /** Human-readable reason, shown in the attempt log when outcome is not "hit". */
   detail?: string;
+  /** Vendor-side id of a `pending` lookup, so a callback can be matched to it. */
+  requestId?: string;
+}
+
+/** Per-call context the runner hands an adapter alongside the lead. */
+export interface FindContext {
+  /**
+   * Public URL a deferred vendor must POST its answer to. Unique per paused
+   * lookup — the token in it is what the callback route resolves back to the
+   * lead and field. Absent when the runner has no reachable origin (local dev),
+   * in which case a deferred adapter must return an `error`, never `pending`.
+   */
+  callbackUrl?: string;
 }
 
 export interface CreditBalance {
@@ -97,8 +117,20 @@ export interface EnrichProvider {
   readonly keyFormat?: string;
   /** Minimum inputs needed. The runner skips the provider as "ineligible" otherwise. */
   requirements(field: EnrichField): InputRequirement;
+  /**
+   * Fields this vendor answers only by callback. For those, `find()` returns
+   * `pending` and `parseCallback()` maps the delivered payload; any other field
+   * resolves in-band as usual (Apollo: email in-band, phone by webhook).
+   * Surfaced in the UI because a paused lead looks, to a user, like a slow one.
+   */
+  readonly deferred?: readonly EnrichField[];
   /** Resolve one field for one lead. Must never throw — map failures to an EnrichResult. */
-  find(field: EnrichField, input: LeadInput, apiKey: string): Promise<EnrichResult>;
+  find(field: EnrichField, input: LeadInput, apiKey: string, ctx?: FindContext): Promise<EnrichResult>;
+  /**
+   * Map the body a deferred vendor POSTed to the callback URL onto a result.
+   * Never `pending`. Must never throw: an unrecognisable payload is an `error`.
+   */
+  parseCallback?(field: EnrichField, body: unknown): EnrichResult;
   /** Standalone verification, used when enriching an imported list that already has values. */
   verify?(value: string, apiKey: string): Promise<EnrichResult>;
   /** Remaining balance for the settings screen. Optional — not every vendor exposes it. */
@@ -127,4 +159,21 @@ export interface WaterfallResult {
   cached: boolean;
   totalCredits: number;
   attempts: EnrichAttempt[];
+  /**
+   * Set when the waterfall paused at a deferred vendor. `value` is null in that
+   * case; the fallback found so far travels here so the resume can carry it.
+   */
+  pending?: PendingWaterfall;
+}
+
+/** Where a paused waterfall stopped, and what it had in hand. */
+export interface PendingWaterfall {
+  providerId: string;
+  requestId: string;
+  /** Index into `order` of the provider that paused the search. */
+  position: number;
+  /** Credits spent by this field's waterfall before the pause. */
+  totalCredits: number;
+  /** Best unverified value seen so far, kept as the eventual fallback. */
+  fallback: { value: string; providerId: string } | null;
 }

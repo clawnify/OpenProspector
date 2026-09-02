@@ -73,6 +73,13 @@ export function WaterfallCard({
                 </span>
                 <Favicon domain={p.signup_url} size={14} />
                 <span className="flex-1 truncate text-sm font-medium">{p.label}</span>
+                {p.deferred?.includes(field) ? (
+                  // The one vendor kind that changes how a run feels: a lead
+                  // that reaches it waits for the answer instead of moving on.
+                  <span title="Answers by callback — a lead pauses here until the vendor replies">
+                    <Chip>Callback</Chip>
+                  </span>
+                ) : null}
 
                 {p.status === "planned" ? (
                   // Shown in position so the intended depth of the waterfall is

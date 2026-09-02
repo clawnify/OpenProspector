@@ -42,14 +42,22 @@ Every adapter is written against the vendor's own published contract, and its re
 | 5 | **Skrapp** | 1 credit | graded (SMTP) | name + domain/company |
 | 6 | **Tomba** | 1 credit | graded | name + domain/company |
 | 7 | **Datagma** | 1 credit, **only when verified** | graded (SMTP) | name + domain/company |
-| 8 | **Prospeo** | 1 credit | ✅ | profile URL, email, or name + company |
-| 9 | **Wiza** | ~2 credits | graded | profile URL, email, or name + company |
-| 10 | **Apollo** | 1 credit | graded | profile URL, email, or name + company |
-| 11 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
-| 12 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
-| 13 | **Forager** | 1 credit | graded | profile URL |
+| 8 | **Snov.io** | 1 credit, **only when found** | graded (SMTP) | first + last name + domain |
+| 9 | **Surfe** | 1 credit, **only when found** | ✅ | profile URL, or name + domain/company |
+| 10 | **Prospeo** | 1 credit | ✅ | profile URL, email, or name + company |
+| 11 | **Wiza** | ~2 credits | graded | profile URL, email, or name + company |
+| 12 | **RocketReach** | 1 credit, **only when found** | graded (SMTP) | profile URL, email, or name + company |
+| 13 | **Apollo** | 1 credit | graded | profile URL, email, or name + company |
+| 14 | **People Data Labs** | 1 match | ❌ dataset | profile URL, email, or name + company |
+| 15 | **ContactOut** | 2 credits | graded | profile URL, email, or name + company |
+| 16 | **Forager** | 1 credit | graded | profile URL |
+| 17 | **Dropcontact** ⏳ | 1 credit, **only when found** | graded | profile URL, or name + domain/company |
+| 18 | **Kaspr** | 1 credit | ❌ ungraded | profile URL + name |
+| 19 | **Zeliq** ⏳ | as reported per call | graded | profile URL, or name + domain/company |
 
-Positions 3–7 are grouped deliberately: **each of those vendors bills only when it actually returns an address**, so an attempt that misses costs nothing. A vendor that is free to try belongs ahead of one that charges whether or not it resolves. Apollo sits behind them because it charges on a match even when the address it returns is a `guessed` one.
+Positions 3–9 are grouped deliberately: **each of those vendors bills only when it actually returns an address**, so an attempt that misses costs nothing. A vendor that is free to try belongs ahead of one that charges whether or not it resolves. Apollo sits behind them because it charges on a match even when the address it returns is a `guessed` one.
+
+⏳ marks a vendor that **answers by callback** rather than in the same request — see [Vendors that answer later](#vendors-that-answer-later). They sit at the end of the default order because a lead that reaches one waits for it; the in-band vendors get their turn first.
 
 ### Phone waterfall
 
@@ -58,38 +66,48 @@ Positions 3–7 are grouped deliberately: **each of those vendors bills only whe
 | 1 | **Forager** | 1 credit | profile URL |
 | 2 | **People Data Labs** | 1 match | profile URL, email, or name + company |
 | 3 | **Datagma** | as reported per call | profile URL, email, or name + company |
-| 4 | **LeadMagic** | 5 credits | profile URL **or work email** |
-| 5 | **Wiza** | ~5 credits | profile URL, email, or name + company |
-| 6 | **ContactOut** | 2 credits | profile URL, email, or name + company |
-| 7 | **Prospeo** | 10 credits | profile URL, email, or name + company |
+| 4 | **Surfe** | 1 mobile credit, **only when found** | profile URL, or name + domain/company |
+| 5 | **RocketReach** | 1 premium credit, **only when found** | profile URL, email, or name + company |
+| 6 | **Kaspr** | 1 phone credit | profile URL + name |
+| 7 | **LeadMagic** | 5 credits | profile URL **or work email** |
+| 8 | **Wiza** | ~5 credits | profile URL, email, or name + company |
+| 9 | **ContactOut** | 2 credits | profile URL, email, or name + company |
+| 10 | **Prospeo** | 10 credits | profile URL, email, or name + company |
+| 11 | **Apollo** ⏳ | 8 credits, **only when found** | profile URL, email, or name + company |
+| 12 | **Zeliq** ⏳ | as reported per call (~10) | profile URL **or work email** |
 
 Datagma prefers a **mobile** over a switchboard number and reports its own `creditBurn` on every call, so its real cost lands in the ledger rather than an assumed list price.
 
 Phone credits cost meaningfully more than email — Prospeo prices a mobile at **10×** an email — which is why the phone waterfall runs deeper before giving up, and why ordering it well matters more.
 
-**The phone waterfall runs on the email waterfall's output.** Most phone vendors key on a work email or a profile URL, not on a name and a domain, so a freshly sourced lead has nothing they can match. The runner therefore resolves email first and feeds the result forward as an input. Without that, four of the seven phone vendors could never run at all.
+**The phone waterfall runs on the email waterfall's output.** Most phone vendors key on a work email or a profile URL, not on a name and a domain, so a freshly sourced lead has nothing they can match. The runner therefore resolves email first and feeds the result forward as an input. Without that, several of the phone vendors could never run at all.
+
+### Vendors that answer later
+
+Not every vendor answers in the request that asked. There are two shapes, and the app handles each differently.
+
+**Finished a few seconds later** (Wiza, Snov.io, Surfe, RocketReach). The vendor acknowledges the lookup with an id and completes it within seconds; the adapter polls that id in the same pass, with a hard cap of 25 seconds, so to the waterfall it is an ordinary in-band vendor. The trade is named in the code: a lookup that outruns the cap is a paid-for result we drop, and its id goes into the attempt log so it can be retrieved by hand.
+
+**Delivered by webhook, minutes later** (Dropcontact, Zeliq, and Apollo's phone numbers). These vendors POST the result to a URL you give them, and there is nothing to poll. The waterfall **pauses** at that vendor: the lead is marked `waiting`, the position it stopped at is stored, and the vendor is handed a one-time callback URL (`/api/callbacks/{token}`, a fresh UUID per pause). When the callback lands, the answer is folded in exactly as if it had come back in-band — a verified hit ends the search and is cached, anything else moves on to the next vendor — and the remaining fields are resolved from there, with a resolved email still fed forward into the phone lookup. Each pause is also given a **10-minute timeout**, delivered by the platform queue: a vendor that never calls back is logged as an `error` naming it, and the waterfall continues. A run stays `enriching` while any of its leads is waiting, and is marked done by whichever callback settles the last one.
+
+Two consequences worth knowing. A deferred vendor placed *early* in a waterfall makes every lead that reaches it wait, which is why the defaults put them last. And the callback URL is built from the app's own origin, so on a local `pnpm dev` no vendor can reach it: deferred vendors are then skipped with an `error` saying so, rather than parking leads that will never resume.
 
 ### Not shipped
 
-Most of these share one blocker, and it is worth stating once: **their enrichment API does not answer in the same request.** You POST, you get an id, and the result arrives later by webhook or by polling. This waterfall is synchronous by necessity: it decides whether to spend a credit at the next vendor based on whether this one resolved the field, so it cannot proceed without an answer in-band. Supporting any of them is one deferred feature (a pending-enrichment table, a public callback route, out-of-band lead and ledger writes) that would unlock the whole list at once, which is why they are recorded together rather than each half-built.
-
 | Provider | Why |
 |----------|-----|
-| Dropcontact | Batch-only API: a POST returns a request id, and results are fetched by a later GET. |
-| RocketReach | Lookups come back `searching` / `waiting` and complete out of band, needing polling or a webhook. |
-| Surfe | Enrichment returns an `enrichmentID` immediately; results arrive by polling or webhook. |
-| Snov.io | Task-based: a POST to `/start` returns a `task_hash`, and the result is fetched from `/result`. |
-| Zeliq | Both enrichment endpoints require a `callback_url` and deliver only as a webhook, minutes later. There is no synchronous mode. |
-| Bytemine | Shipped once, now parked. `api.bytemine.ai` is a CNAME onto an AWS API Gateway custom domain that stopped serving TLS for that hostname on 2026-09-01: against the same IP in the same second, the gateway's own SNI name completes a TLS 1.3 handshake while `api.bytemine.ai` gets alert 40. Server-side and client-independent, reproduced from three TLS stacks. The adapter and its tests are kept, so reviving it is one line once the handshake works again. |
-| Kaspr | The second odd one out. Kaspr *is* synchronous and self-serve, so it is not blocked by the above. What is missing is the contract: its request is documented, but its response schema is not published anywhere retrievable (the reference renders client-side and the developer docs host does not respond). Guessing which field holds the email and which the mobile reads as "Kaspr never has data for anyone" rather than as a bug. It needs one live call against a real key to pin, then it is a normal adapter. |
+| Bytemine | Shipped once, now parked. `api.bytemine.ai` is a CNAME onto an AWS API Gateway custom domain that stopped serving TLS for that hostname on 2026-09-01: against the same IP in the same second, the gateway's own SNI name completes a TLS 1.3 handshake while `api.bytemine.ai` gets alert 40. Server-side and client-independent, reproduced from three TLS stacks, and still failing the same way on 2026-09-02. The adapter and its tests are kept, so reviving it is one line once the handshake works again. |
 
-**Apollo ships for email only**, for the same structural reason: `reveal_phone_number` requires a `webhook_url`, and Apollo documents that the phone numbers are delivered to it asynchronously. Declaring `phone` on that adapter would produce a provider that is always called, always charged, and never resolves.
-
-### Two keys that are not a plain token
+### Keys that are not a plain token
 
 - **Forager** puts the account id in the URL path, so its secret is stored as `FORAGER_API_KEY=accountId:apiKey`.
 - **Tomba** authenticates with two headers (`X-Tomba-Key` and `X-Tomba-Secret`), so its secret is stored as `TOMBA_API_KEY=key:secret`.
+- **Snov.io** uses OAuth client credentials, so its secret is stored as `SNOV_API_KEY=clientId:clientSecret`; the app mints and caches the short-lived bearer token itself.
 - Every other vendor takes an opaque key. The settings screen shows the expected shape next to each field.
+
+### What the vendor's plan has to include
+
+Buying a key is not always the same as unlocking the API. The ones that bite: **Snov.io** and **LeadMagic** give no API access on the free tier; **Surfe** lists the API only on its Enterprise plan; **Kaspr** opens the API from its Starter plan; **Wiza** sells API credits separately from plan credits. The `.dev.vars.example` file carries the current notes.
 
 ### Adding a provider
 
@@ -107,7 +125,18 @@ export const MyProvider: EnrichProvider = {
 };
 ```
 
-Adapters are pure request/response wrappers with no app coupling — no database, no caching, no ordering logic. The runner owns all of that, which is what keeps the registry cheap to extend.
+A vendor that delivers by webhook declares the fields it defers and maps the delivery:
+
+```ts
+  deferred: ["email"],
+  async find(field, input, apiKey, ctx) {
+    // start the lookup with ctx.callbackUrl, then:
+    return { outcome: "pending", value: null, verified: false, creditsUsed: 0, requestId };
+  },
+  parseCallback(field, body) { /* the POSTed body → EnrichResult */ },
+```
+
+Adapters are pure request/response wrappers with no app coupling — no database, no caching, no ordering logic. The runner owns all of that, including the pause and resume around a deferred vendor, which is what keeps the registry cheap to extend.
 
 ## How a Search Runs
 
@@ -188,7 +217,8 @@ All list endpoints are paginated (`?page=`, `?limit=`, max 100) and searchable �
 | `POST` | `/api/runs/{id}/enrich` | Queue enrichment for a run's pending leads |
 | `POST` | `/api/leads` | Import leads (CSV or an existing list) |
 | `GET` | `/api/leads`, `/api/leads/{id}` | List leads; one lead with its attempt log |
-| `POST` | `/api/leads/{id}/enrich` | Enrich one lead (`?refresh=true` to re-buy) |
+| `POST` | `/api/leads/{id}/enrich` | Enrich one lead (`?refresh=true` to re-buy); returns `enrich_status: waiting` if it paused on a callback vendor |
+| `POST` | `/api/callbacks/{token}` | Where deferred vendors deliver; the token is minted per pause and dies with it |
 | `GET` | `/api/export/leads.csv` | Download leads as CSV (bounded; page with `offset`) |
 | `GET` | `/api/export/leads.csv?format=linkedin-contacts` | LinkedIn Matched Audiences **contact** list |
 | `GET` | `/api/export/leads.csv?format=linkedin-companies` | LinkedIn Matched Audiences **company** list, deduplicated |

@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS leads (
   phone_verified INTEGER NOT NULL DEFAULT 0,
   phone_provider TEXT DEFAULT '',
 
-  enrich_status TEXT NOT NULL DEFAULT 'pending', -- pending|running|done|failed
+  enrich_status TEXT NOT NULL DEFAULT 'pending', -- pending|running|waiting|done|failed
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -109,3 +109,26 @@ CREATE TABLE IF NOT EXISTS agent_config (
   server_id TEXT NOT NULL DEFAULT '',
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+-- A waterfall paused at a vendor that answers by callback. One row per pause;
+-- the id is the callback token, so a POST to /api/callbacks/<provider>/<id>
+-- resolves straight back to the lead, the field, and where to resume. Deleted
+-- when the answer lands or the timeout sweep gives up on it — a late callback
+-- that finds no row is simply ignored.
+CREATE TABLE IF NOT EXISTS pending_enrichments (
+  id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL,
+  run_id TEXT,
+  field TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  request_id TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL,
+  total_credits INTEGER NOT NULL DEFAULT 0,
+  fallback_value TEXT NOT NULL DEFAULT '',
+  fallback_provider TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_lead ON pending_enrichments(lead_id);
+CREATE INDEX IF NOT EXISTS idx_pending_run ON pending_enrichments(run_id);

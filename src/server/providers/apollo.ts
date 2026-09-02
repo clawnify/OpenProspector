@@ -1,27 +1,14 @@
-// Apollo adapter — work email only, deliberately.
+// Apollo adapter. https://docs.apollo.io/reference/people-enrichment
 //
-// Contract verified against https://docs.apollo.io/reference/people-enrichment :
-//   POST /api/v1/people/match?first_name=&last_name=&name=&email=&domain=
-//                            &organization_name=&linkedin_url=
-//        -> { person: { email, email_status, ... } }
-//   Auth: x-api-key: <key>
+// Email resolves in-band from people/match. Phone does not: Apollo verifies
+// mobile and direct-dial numbers asynchronously and delivers them only to the
+// `webhook_url` on the request, "several minutes" later — so the phone field
+// is deferred, and the waterfall pauses until that webhook lands. The same
+// match call is used, so a record Apollo has already revealed for this team
+// comes back in-band and is used at once.
 //
-// **Why this adapter does not offer phone, despite Apollo selling mobiles.**
-// `reveal_phone_number=true` requires a `webhook_url`, and Apollo documents the
-// behaviour explicitly: the main response returns synchronously, then the phone
-// numbers are delivered to that webhook asynchronously. The same is true of
-// `run_waterfall_email` / `run_waterfall_phone`. This waterfall runner decides
-// whether to spend the next vendor's credit based on whether this one resolved
-// the field, so it cannot proceed without an answer in-band. Declaring `phone`
-// here would therefore produce a provider that is always called, always
-// charged, and never resolves. That is the same structural blocker recorded for
-// Zeliq in planned.ts — see PLANNED for the deferred path it would need.
-//
-// So: `fields` is ["email"], and the request never sets a parameter that would
-// require a webhook. A key that is out of phone credits changes nothing here.
-//
-// Pricing, per their docs: 1 credit when credit-consuming data (an email) is
-// returned, and zero when the match carries none.
+// Credits are charged only when data is found: one for the match, eight more
+// when a mobile is delivered.
 
 import type {
   EnrichField,
@@ -30,6 +17,28 @@ import type {
   InputRequirement,
   LeadInput,
 } from "./types";
+
+interface PhoneNumber {
+  sanitized_number?: string | null;
+  raw_number?: string | null;
+  type_cd?: string | null;
+  status_cd?: string | null;
+}
+
+interface MatchBody {
+  request_id?: string | number;
+  person?: {
+    email?: string | null;
+    email_status?: string | null;
+    contact?: { phone_numbers?: PhoneNumber[] | null } | null;
+  } | null;
+}
+
+/** The webhook body: a batch wrapper around the people it enriched. */
+interface PhoneWebhook {
+  credits_consumed?: number;
+  people?: { status?: string; phone_numbers?: PhoneNumber[] | null }[];
+}
 import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.apollo.io";
@@ -62,9 +71,10 @@ function matchQuery(input: LeadInput): URLSearchParams | null {
 export const ApolloProvider: EnrichProvider = {
   id: "apollo",
   label: "Apollo",
-  fields: ["email"],
+  fields: ["email", "phone"],
   secretName: "APOLLO_API_KEY",
   signupUrl: "https://app.apollo.io/#/settings/integrations/api",
+  deferred: ["phone"],
 
   requirements(_field: EnrichField): InputRequirement {
     // Apollo matches on a profile URL, an email, or a name plus a company handle.
@@ -74,11 +84,16 @@ export const ApolloProvider: EnrichProvider = {
     ];
   },
 
-  async find(field, input, apiKey): Promise<EnrichResult> {
-    if (field !== "email") return ineligible("Apollo phone numbers are webhook-only; email is the only in-band field");
-
+  async find(field, input, apiKey, ctx): Promise<EnrichResult> {
     const q = matchQuery(input);
     if (!q) return ineligible("Needs a profile URL, an email, or a name with a company or domain");
+    if (field === "phone") {
+      if (!ctx?.callbackUrl) {
+        return { outcome: "error", value: null, verified: false, creditsUsed: 0, detail: "Apollo delivers phone numbers by webhook, and no callback URL was provided" };
+      }
+      q.set("reveal_phone_number", "true");
+      q.set("webhook_url", ctx.callbackUrl);
+    }
 
     const { status, body } = await vendorFetch(`${BASE}/api/v1/people/match?${q}`, {
       method: "POST",
@@ -90,7 +105,16 @@ export const ApolloProvider: EnrichProvider = {
       return { outcome, value: null, verified: false, creditsUsed: 0, detail };
     }
 
-    const person = (body as { person?: { email?: string | null; email_status?: string | null } } | null)?.person;
+    const match = (body ?? {}) as MatchBody;
+    const person = match.person;
+    if (field === "phone") {
+      if (!person) return miss();
+      // Already revealed for this team: the numbers are in the match itself.
+      const known = readPhones(person.contact?.phone_numbers ?? [], 0);
+      if (known.outcome === "hit") return known;
+      return { outcome: "pending", value: null, verified: false, creditsUsed: 0, requestId: match.request_id === undefined ? "" : String(match.request_id) };
+    }
+
     // A 200 with no person, or a person Apollo holds no address for, is a
     // search that found nothing — Apollo charges no credit for it.
     if (!person?.email) return miss();
@@ -111,4 +135,27 @@ export const ApolloProvider: EnrichProvider = {
       detail: emailStatus === "verified" ? undefined : `Apollo email_status: ${emailStatus || "unknown"}`,
     };
   },
+
+  parseCallback(field, body): EnrichResult {
+    if (field !== "phone") return { outcome: "error", value: null, verified: false, creditsUsed: 0, detail: "Apollo only delivers phone numbers by webhook" };
+    const hook = (body ?? {}) as PhoneWebhook;
+    const person = hook.people?.[0];
+    if (!person) return { outcome: "error", value: null, verified: false, creditsUsed: 0, detail: "Apollo webhook carried no person" };
+    // The webhook's own count is documented as illustrative, so the list
+    // price for a mobile is the fallback when it is absent.
+    const credits = typeof hook.credits_consumed === "number" ? hook.credits_consumed : 8;
+    return readPhones(person.phone_numbers ?? [], credits);
+  },
 };
+
+/** A validated mobile first, then a direct dial; never a switchboard. */
+function readPhones(numbers: PhoneNumber[], credits: number): EnrichResult {
+  const usable = numbers.filter((n) => (n.sanitized_number || n.raw_number) && n.status_cd !== "invalid_number");
+  const pick =
+    usable.find((n) => n.type_cd === "mobile" && n.status_cd === "valid_number") ??
+    usable.find((n) => n.type_cd === "mobile") ??
+    usable.find((n) => n.type_cd === "work_direct");
+  const value = pick?.sanitized_number || pick?.raw_number;
+  if (!value) return miss("No mobile or direct dial delivered", 0);
+  return { outcome: "hit", value, verified: true, creditsUsed: credits, detail: `Apollo type: ${pick?.type_cd}` };
+}

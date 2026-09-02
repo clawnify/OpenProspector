@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ConnectionsEnv } from "@clawnify/connections";
 import {
   runWaterfall,
+  applyDeferredResult,
   cacheKey,
   defaultOrder,
   describeRequirements,
@@ -20,7 +21,7 @@ import type { EnrichField, EnrichProvider, EnrichResult, InputRequirement, LeadI
 function stub(
   id: string,
   result: Partial<EnrichResult> & { outcome: EnrichResult["outcome"] },
-  opts: { requires?: InputRequirement; fields?: EnrichField[]; throws?: boolean } = {},
+  opts: { requires?: InputRequirement; fields?: EnrichField[]; throws?: boolean; deferred?: boolean } = {},
 ): EnrichProvider & { calls: number } {
   const p = {
     id,
@@ -28,6 +29,7 @@ function stub(
     fields: opts.fields ?? (["email"] as const),
     secretName: `${id.toUpperCase()}_API_KEY`,
     signupUrl: "https://example.com",
+    ...(opts.deferred ? { deferred: opts.fields ?? (["email"] as const) } : {}),
     calls: 0,
     requirements: () => opts.requires ?? (["fullName", "domain"] as InputRequirement),
     async find(): Promise<EnrichResult> {
@@ -177,6 +179,138 @@ describe("runWaterfall", () => {
     expect(phoneOnly.calls).toBe(0);
     expect(res.attempts.some((x) => x.providerId === "a")).toBe(false);
     expect(res.value).toBe("ada@acme.com");
+  });
+});
+
+describe("deferred vendors", () => {
+  it("pauses at a deferred vendor, carrying the fallback and credits spent so far", async () => {
+    const a = stub("a", { outcome: "hit", value: "guess@acme.com", verified: false, creditsUsed: 1 });
+    const d = stub("d", { outcome: "pending", requestId: "req-1" }, { deferred: true });
+    const c = stub("c", { outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+
+    const res = await runWaterfall("email", LEAD, envWith("a", "d", "c"), {
+      order: ["a", "d", "c"],
+      registry: [a, d, c],
+      callbackUrl: "https://x.apps.clawnify.com/api/callbacks/d/tok",
+    });
+
+    expect(res.value).toBeNull();
+    expect(res.pending).toEqual({
+      providerId: "d",
+      requestId: "req-1",
+      position: 1,
+      totalCredits: 1,
+      fallback: { value: "guess@acme.com", providerId: "a" },
+    });
+    expect(c.calls).toBe(0); // nothing after the pause runs until the answer lands
+    expect(res.attempts.map((x) => x.outcome)).toEqual(["hit", "pending"]);
+  });
+
+  it("skips a deferred vendor as an error, not a pause, when there is no callback URL", async () => {
+    const d = stub("d", { outcome: "pending", requestId: "req-1" }, { deferred: true });
+    const c = stub("c", { outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+
+    const res = await runWaterfall("email", LEAD, envWith("d", "c"), { order: ["d", "c"], registry: [d, c] });
+
+    expect(d.calls).toBe(0);
+    expect(res.attempts[0]).toMatchObject({ providerId: "d", outcome: "error" });
+    expect(res.value).toBe("ada@acme.com");
+    expect(res.pending).toBeUndefined();
+  });
+
+  it("refuses a pending answer from a vendor that is not declared deferred", async () => {
+    const bad = stub("bad", { outcome: "pending", requestId: "x" });
+    const c = stub("c", { outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+
+    const res = await runWaterfall("email", LEAD, envWith("bad", "c"), {
+      order: ["bad", "c"],
+      registry: [bad, c],
+      callbackUrl: "https://x/cb",
+    });
+
+    expect(res.attempts[0]).toMatchObject({ providerId: "bad", outcome: "error" });
+    expect(res.value).toBe("ada@acme.com");
+  });
+
+  it("finishes on a verified callback answer, caches it, and calls nothing further", async () => {
+    const d = stub("d", { outcome: "pending" }, { deferred: true });
+    const c = stub("c", { outcome: "hit", value: "wrong@acme.com", verified: true, creditsUsed: 1 });
+    const store = new Map<string, { value: string; verified: boolean; providerId: string }>();
+    const cache: EnrichCache = {
+      get: async () => null,
+      put: async (field, input, hit) => void store.set(cacheKey(field, input), hit),
+    };
+
+    const res = await applyDeferredResult(
+      "email",
+      LEAD,
+      envWith("d", "c"),
+      { providerId: "d", requestId: "req-1", position: 0, totalCredits: 0, fallback: null },
+      { outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 2 },
+      { order: ["d", "c"], registry: [d, c], cache },
+    );
+
+    expect(res).toMatchObject({ value: "ada@acme.com", providerId: "d", verified: true, totalCredits: 2 });
+    expect(res.attempts).toEqual([{ providerId: "d", field: "email", outcome: "hit", creditsUsed: 2, ms: 0, detail: undefined }]);
+    expect(c.calls).toBe(0);
+    expect(store.get(cacheKey("email", LEAD))).toEqual({ value: "ada@acme.com", verified: true, providerId: "d" });
+  });
+
+  it("resumes from the next provider after a callback miss, keeping the earlier fallback", async () => {
+    const d = stub("d", { outcome: "pending" }, { deferred: true });
+    const c = stub("c", { outcome: "miss" });
+
+    const res = await applyDeferredResult(
+      "email",
+      LEAD,
+      envWith("d", "c"),
+      { providerId: "d", requestId: "req-1", position: 0, totalCredits: 1, fallback: { value: "guess@acme.com", providerId: "a" } },
+      { outcome: "miss", value: null, verified: false, creditsUsed: 0, detail: "No record" },
+      { order: ["d", "c"], registry: [d, c] },
+    );
+
+    expect(c.calls).toBe(1);
+    expect(d.calls).toBe(0); // the paused vendor is not asked again
+    expect(res.attempts.map((x) => [x.providerId, x.outcome])).toEqual([["d", "miss"], ["c", "miss"]]);
+    expect(res).toMatchObject({ value: "guess@acme.com", providerId: "a", verified: false, totalCredits: 1 });
+  });
+
+  it("can pause a second time when the resumed waterfall reaches another deferred vendor", async () => {
+    const d1 = stub("d1", { outcome: "pending" }, { deferred: true });
+    const d2 = stub("d2", { outcome: "pending", requestId: "req-2" }, { deferred: true });
+
+    const res = await applyDeferredResult(
+      "email",
+      LEAD,
+      envWith("d1", "d2"),
+      { providerId: "d1", requestId: "req-1", position: 0, totalCredits: 0, fallback: null },
+      { outcome: "miss", value: null, verified: false, creditsUsed: 1 },
+      { order: ["d1", "d2"], registry: [d1, d2], callbackUrl: "https://x/cb2" },
+    );
+
+    expect(res.pending).toMatchObject({ providerId: "d2", requestId: "req-2", position: 1, totalCredits: 1 });
+  });
+
+  it("does not re-read the cache on resume, so a paused lookup cannot be answered by a stale entry", async () => {
+    const c = stub("c", { outcome: "miss" });
+    let reads = 0;
+    const cache: EnrichCache = {
+      get: async () => {
+        reads++;
+        return { value: "stale@acme.com", verified: true, providerId: "old" };
+      },
+      put: async () => {},
+    };
+
+    const res = await runWaterfall("email", LEAD, envWith("c"), {
+      order: ["c"],
+      registry: [c],
+      cache,
+      resume: { startAt: 0, totalCredits: 0, fallback: null },
+    });
+
+    expect(reads).toBe(0);
+    expect(res.value).toBeNull();
   });
 });
 

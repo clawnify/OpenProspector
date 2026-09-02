@@ -63,7 +63,12 @@ suite("live vendor reachability", () => {
           // a shipped vendor nobody can call.
           let r: Awaited<ReturnType<typeof provider.find>>;
           try {
-            r = await provider.find(field as EnrichField, LEAD, bogusKey(provider));
+            // Deferred fields refuse to run without a callback URL — before any
+            // request — so one is supplied; the bad key still stops the vendor
+            // from ever calling it.
+            r = await provider.find(field as EnrichField, LEAD, bogusKey(provider), {
+              callbackUrl: "https://example.com/api/callbacks/00000000-0000-4000-8000-000000000000",
+            });
           } catch (err) {
             throw new Error(
               `${provider.id}/${field}: endpoint unreachable (${err instanceof Error ? err.message : String(err)})`,

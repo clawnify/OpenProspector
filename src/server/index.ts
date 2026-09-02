@@ -3,11 +3,22 @@ import { enqueueJob, verifyDelivery } from "@clawnify/queue";
 import type { CredentialBinding } from "@clawnify/connections";
 import { get, query, run } from "./db.js";
 import { d1Cache, recordAttempts, runCredits } from "./cache.js";
-import { REGISTRY, defaultOrder, runWaterfall, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
+import { REGISTRY, defaultOrder, providerById, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
 import { plannedForField } from "./providers/planned.js";
+import {
+  FIELDS,
+  CALLBACK_TIMEOUT_MINUTES,
+  cancelPending,
+  enrichLead,
+  expireOverdue,
+  finishRunIfDrained,
+  resumeLead,
+  type EnrichEnv,
+  type EnrichOptions,
+} from "./enrich.js";
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
-import type { EnrichField, LeadInput, WaterfallResult } from "./providers/types.js";
+import type { EnrichField, EnrichResult } from "./providers/types.js";
 
 type Env = {
   Bindings: {
@@ -127,8 +138,6 @@ const STALE_AFTER = "-15 minutes";
 const RUN_SELECT =
   `*, (CASE WHEN status IN ('sourcing', 'enriching') AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
 
-const FIELDS: EnrichField[] = ["email", "phone"];
-
 function isField(v: string): v is EnrichField {
   return (FIELDS as string[]).includes(v);
 }
@@ -191,6 +200,9 @@ const listProviders = createRoute({
                 key_format: z.string().optional().openapi({
                   description: "Shape of the secret when it is not an opaque key (e.g. Forager's 'accountId:apiKey')",
                 }),
+                deferred: z.array(z.string()).optional().openapi({
+                  description: "Fields the vendor answers by callback: a lead reaching it for one of these waits (up to the callback timeout) instead of resolving in the same pass",
+                }),
                 blocked_by: z.string().optional().openapi({
                   description: "Why a planned vendor is not shipped yet",
                 }),
@@ -199,6 +211,7 @@ const listProviders = createRoute({
             ),
             waterfalls: z.record(z.string(), z.array(z.string())),
             cache_max_age_days: z.number().int(),
+            callback_timeout_minutes: z.number().int(),
           }),
         },
       },
@@ -231,6 +244,7 @@ app.openapi(listProviders, async (c) => {
         configured,
         status: "available" as "available" | "planned",
         ...(p.keyFormat ? { key_format: p.keyFormat } : {}),
+        ...(p.deferred ? { deferred: [...p.deferred] } : {}),
         ...(wantCredits ? { credits_remaining: creditsRemaining ?? null } : {}),
       };
     }),
@@ -270,7 +284,12 @@ app.openapi(listProviders, async (c) => {
   }
 
   return c.json(
-    { providers: [...providers, ...planned], waterfalls, cache_max_age_days: CACHE_MAX_AGE_DAYS },
+    {
+      providers: [...providers, ...planned],
+      waterfalls,
+      cache_max_age_days: CACHE_MAX_AGE_DAYS,
+      callback_timeout_minutes: CALLBACK_TIMEOUT_MINUTES,
+    },
     200,
   );
 });
@@ -575,7 +594,7 @@ const listLeads = createRoute({
   request: {
     query: PaginationQuery.extend({
       run_id: z.string().optional().openapi({ description: "Restrict to one run" }),
-      enrich_status: z.string().optional().openapi({ description: "pending | running | done | failed" }),
+      enrich_status: z.string().optional().openapi({ description: "pending | running | waiting | done | failed" }),
       has_email: z.string().optional().openapi({ description: "'true' for leads with a resolved email, 'false' for those without" }),
     }),
   },
@@ -756,50 +775,14 @@ app.openapi(getLead, async (c) => {
  */
 const BATCH_SIZE = 10;
 
-function leadInput(row: Record<string, unknown>): LeadInput {
-  return {
-    fullName: String(row.full_name || "") || undefined,
-    domain: String(row.domain || "") || undefined,
-    company: String(row.company || "") || undefined,
-    linkedinUrl: String(row.linkedin_url || "") || undefined,
-    // An email already on the row is an *input*, not just an output: most phone
-    // vendors key off an email or a profile URL rather than name + domain.
-    email: String(row.email || "") || undefined,
-  };
-}
-
-/**
- * Run every field's waterfall for one lead, feeding each field's result forward
- * as an input to the next.
- *
- * The forwarding is the point. FIELDS resolves email before phone, and the
- * phone vendors that key on a work email (LeadMagic, ContactOut, Wiza) are only
- * reachable once that email exists — without this, a freshly sourced lead makes
- * them all log `ineligible` and the phone column stays permanently empty.
- */
-async function enrichFields(
-  base: LeadInput,
-  env: Parameters<typeof runWaterfall>[2],
-  orders: Record<EnrichField, string[]>,
-  opts: { refresh?: boolean } = {},
-): Promise<Record<EnrichField, WaterfallResult>> {
-  let input = base;
-  const results = {} as Record<EnrichField, WaterfallResult>;
-  for (const field of FIELDS) {
-    const res = await runWaterfall(field, input, env, {
-      order: orders[field],
-      cache: d1Cache,
-      refresh: opts.refresh,
-    });
-    results[field] = res;
-    if (field === "email" && res.value) input = { ...input, email: res.value };
-  }
-  return results;
-}
-
 /** Both waterfalls' configured order, read once per batch rather than per lead. */
-async function waterfallOrders(): Promise<Record<EnrichField, string[]>> {
-  return { email: await waterfallOrder("email"), phone: await waterfallOrder("phone") };
+async function enrichOptions(c: { req: { url: string } }, refresh = false): Promise<EnrichOptions> {
+  return {
+    orders: { email: await waterfallOrder("email"), phone: await waterfallOrder("phone") },
+    // The app's own origin — no configured base URL to drift from reality.
+    origin: new URL(c.req.url).origin,
+    refresh,
+  };
 }
 
 const startEnrich = createRoute({
@@ -894,36 +877,30 @@ app.post("/api/jobs/enrich", async (c) => {
   const attempt = String(payload.attempt ?? "0");
   if (!runId) return c.json({ error: "Missing runId" }, 400);
 
+  const opts = await enrichOptions(c);
   const leads = await query<Record<string, unknown>>(
     "SELECT * FROM leads WHERE run_id = ? AND enrich_status = 'pending' ORDER BY id LIMIT ?",
     [runId, BATCH_SIZE],
   );
 
   if (leads.length === 0) {
-    await run("UPDATE runs SET status = 'done', updated_at = datetime('now') WHERE id = ?", [runId]);
-    return c.json({ ok: true, done: true }, 200);
+    // Nothing left to start. Leads parked on a callback keep the run open;
+    // the callback (or its timeout sweep) that settles the last of them marks
+    // the run done. Overdue pauses are expired here too, as a backstop for a
+    // deployment whose queue could not schedule their sweeps.
+    await expireOverdue(c.env as EnrichEnv, opts, { runId });
+    await finishRunIfDrained(runId);
+    const waiting = await get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM leads WHERE run_id = ? AND enrich_status = 'waiting'",
+      [runId],
+    );
+    await run("UPDATE runs SET updated_at = datetime('now') WHERE id = ?", [runId]);
+    return c.json({ ok: true, done: (waiting?.n ?? 0) === 0, waiting: waiting?.n ?? 0 }, 200);
   }
 
-  const orders = await waterfallOrders();
-
   for (const lead of leads) {
-    const id = String(lead.id);
-    await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [id]);
-    const updates: string[] = [];
-    const params: unknown[] = [];
-
-    const results = await enrichFields(leadInput(lead), c.env, orders);
-    for (const field of FIELDS) {
-      const res = results[field];
-      await recordAttempts(id, runId, res.attempts);
-      if (res.value) {
-        updates.push(`${field} = ?`, `${field}_verified = ?`, `${field}_provider = ?`);
-        params.push(res.value, res.verified ? 1 : 0, res.providerId ?? "");
-      }
-    }
-
-    updates.push("enrich_status = 'done'", "updated_at = datetime('now')");
-    await run(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`, [...params, id]);
+    await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [String(lead.id)]);
+    await enrichLead(lead, c.env as EnrichEnv, opts);
   }
 
   // Heartbeat. A large run is many batches, none of which otherwise touch the
@@ -975,33 +952,86 @@ app.openapi(reEnrichLead, async (c) => {
   const lead = await get<Record<string, unknown>>("SELECT * FROM leads WHERE id = ?", [id]);
   if (!lead) return c.json({ error: "Not found" }, 404);
 
-  const input = leadInput(lead);
-  const updates: string[] = [];
-  const params: unknown[] = [];
-  let credits = 0;
-  let anyCached = false;
   // Default to using the cache. Bypassing it is a deliberate "I think this value
   // is wrong" action, not the normal path — otherwise every click re-buys a
   // contact we already own.
   const refresh = c.req.valid("query").refresh === "true";
 
-  const results = await enrichFields(input, c.env, await waterfallOrders(), { refresh });
-  for (const field of FIELDS) {
-    const res = results[field];
-    if (res.cached) anyCached = true;
-    await recordAttempts(id, lead.run_id ? String(lead.run_id) : null, res.attempts);
-    credits += res.totalCredits;
-    if (res.value) {
-      updates.push(`${field} = ?`, `${field}_verified = ?`, `${field}_provider = ?`);
-      params.push(res.value, res.verified ? 1 : 0, res.providerId ?? "");
-    }
-  }
+  // A lead still parked on a callback is re-run from scratch; its old pause is
+  // dropped first so a late answer to it cannot land on top of this pass.
+  await cancelPending(id);
+  await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [id]);
+  const outcome = await enrichLead({ ...lead, enrich_status: "running" }, c.env as EnrichEnv, await enrichOptions(c, refresh));
 
-  updates.push("enrich_status = 'done'", "updated_at = datetime('now')");
-  await run(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`, [...params, id]);
   // Non-null: the row was read and updated above in the same request.
   const updated = (await get<LeadRow>("SELECT * FROM leads WHERE id = ?", [id]))!;
-  return c.json({ lead: updated, credits_used: credits, cached: anyCached }, 200);
+  return c.json({ lead: updated, credits_used: outcome.credits, cached: outcome.cached }, 200);
+});
+
+/**
+ * Where deferred vendors deliver their answer. The token is the whole
+ * credential: a v4 UUID minted per pause, resolvable only while the pause is
+ * open, and never listed anywhere. An unknown token is a 404 whether it is
+ * late, duplicate, or forged — the three are indistinguishable and all
+ * harmless, because nothing is written for them.
+ *
+ * Machine-to-machine, so app.post rather than app.openapi, and listed under
+ * `public_routes` in clawnify.json for the same reason the queue target is:
+ * the vendor calls from outside the platform perimeter.
+ */
+app.post("/api/callbacks/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!/^[0-9a-f-]{36}$/i.test(token)) return c.json({ error: "Unknown callback" }, 404);
+  const pending = await get<{ provider_id: string; field: string }>(
+    "SELECT provider_id, field FROM pending_enrichments WHERE id = ?",
+    [token],
+  );
+  if (!pending || !isField(pending.field)) return c.json({ error: "Unknown callback" }, 404);
+
+  const provider = providerById(pending.provider_id);
+  let answer: EnrichResult;
+  if (!provider?.parseCallback) {
+    answer = { outcome: "error", value: null, verified: false, creditsUsed: 0, detail: `${pending.provider_id} is no longer a deferred provider` };
+  } else {
+    let body: unknown = null;
+    try {
+      body = await c.req.json();
+    } catch {
+      body = null;
+    }
+    // Vendor payloads are data, never instructions: the adapter maps them onto
+    // an EnrichResult and nothing else about the request is trusted.
+    answer = provider.parseCallback(pending.field, body);
+  }
+
+  await resumeLead(token, answer, c.env as EnrichEnv, await enrichOptions(c));
+  return c.json({ ok: true }, 200);
+});
+
+/**
+ * Timeout for one pause, delivered by the queue CALLBACK_TIMEOUT_MINUTES after
+ * it opened. A pause already settled by its callback is gone by then, and the
+ * sweep finds nothing to do.
+ */
+app.post("/api/jobs/sweep-pending", async (c) => {
+  const rawBody = await c.req.text();
+  const ok = await verifyDelivery(rawBody, {
+    signature: c.req.header("X-Queue-Signature") ?? null,
+    timestamp: c.req.header("X-Queue-Timestamp") ?? null,
+    keyId: c.req.header("X-Queue-Key-Id") ?? null,
+  });
+  if (!ok) return c.json({ error: "Invalid delivery signature" }, 401);
+
+  let token: string | undefined;
+  try {
+    token = (JSON.parse(rawBody) as { token?: string }).token;
+  } catch {
+    return c.json({ error: "Malformed payload" }, 400);
+  }
+  if (!token) return c.json({ error: "Missing token" }, 400);
+
+  const expired = await expireOverdue(c.env as EnrichEnv, await enrichOptions(c), { token });
+  return c.json({ ok: true, expired }, 200);
 });
 
 // ── Export & push ───────────────────────────────────────────────────
