@@ -116,6 +116,10 @@ export async function resumeLead(token: string, answer: EnrichResult, env: Enric
 
   const lead = await get<Record<string, unknown>>("SELECT * FROM leads WHERE id = ?", [pending.lead_id]);
   if (!lead) return true;
+  // Heartbeat: a run that is only waiting on callbacks otherwise goes quiet
+  // from the last batch until the last answer, and would read as stalled if a
+  // timeout sweep is delivered late.
+  if (pending.run_id) await run("UPDATE runs SET updated_at = datetime('now') WHERE id = ? AND status = 'enriching'", [pending.run_id]);
   const row = { ...lead };
   const paused: PendingWaterfall = {
     providerId: pending.provider_id,

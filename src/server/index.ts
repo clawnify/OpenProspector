@@ -775,6 +775,25 @@ app.openapi(getLead, async (c) => {
  */
 const BATCH_SIZE = 10;
 
+/**
+ * Wall-clock budget for one delivery, after which the job stops starting new
+ * leads and chains the rest. Vendors that are polled in-band can each hold a
+ * lead for up to 25 seconds, so a batch of ten leads across both fields could
+ * otherwise run for the better part of an hour — and the platform consumer
+ * that delivers this job shares a 15-minute wall clock with the other jobs in
+ * its batch. Sixty seconds plus one lead's worst case keeps every delivery
+ * well inside that, however many polled vendors the user stacks in an order.
+ */
+const BATCH_BUDGET_MS = 60_000;
+
+/**
+ * A lead left `running` this long was mid-vendor-call when its delivery died
+ * (the consumer's wall clock, a crash) and will never be picked up by a chain
+ * that only selects `pending`. Reclaimed on the next delivery; the cache makes
+ * a repeat of its already-verified fields free.
+ */
+const STRANDED_AFTER = "-15 minutes";
+
 /** Both waterfalls' configured order, read once per batch rather than per lead. */
 async function enrichOptions(c: { req: { url: string } }, refresh = false): Promise<EnrichOptions> {
   return {
@@ -879,8 +898,10 @@ app.post("/api/jobs/enrich", async (c) => {
 
   const opts = await enrichOptions(c);
   const leads = await query<Record<string, unknown>>(
-    "SELECT * FROM leads WHERE run_id = ? AND enrich_status = 'pending' ORDER BY id LIMIT ?",
-    [runId, BATCH_SIZE],
+    `SELECT * FROM leads WHERE run_id = ?
+       AND (enrich_status = 'pending' OR (enrich_status = 'running' AND updated_at < datetime('now', ?)))
+     ORDER BY id LIMIT ?`,
+    [runId, STRANDED_AFTER, BATCH_SIZE],
   );
 
   if (leads.length === 0) {
@@ -898,9 +919,14 @@ app.post("/api/jobs/enrich", async (c) => {
     return c.json({ ok: true, done: (waiting?.n ?? 0) === 0, waiting: waiting?.n ?? 0 }, 200);
   }
 
+  const started = Date.now();
+  let processed = 0;
   for (const lead of leads) {
+    // Always at least one, so a slow vendor can never stall the chain outright.
+    if (processed > 0 && Date.now() - started > BATCH_BUDGET_MS) break;
     await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [String(lead.id)]);
     await enrichLead(lead, c.env as EnrichEnv, opts);
+    processed++;
   }
 
   // Heartbeat. A large run is many batches, none of which otherwise touch the
@@ -925,7 +951,7 @@ app.post("/api/jobs/enrich", async (c) => {
     return c.json({ error: "Failed to chain next batch" }, 500);
   }
 
-  return c.json({ ok: true, processed: leads.length }, 200);
+  return c.json({ ok: true, processed }, 200);
 });
 
 const reEnrichLead = createRoute({
