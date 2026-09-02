@@ -13,6 +13,18 @@
         "methods": [
           "POST"
         ]
+      },
+      {
+        "path": "/api/jobs/sweep-pending",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/callbacks/*",
+        "methods": [
+          "POST"
+        ]
       }
     ]
   },
@@ -25,12 +37,18 @@
       "SKRAPP_API_KEY",
       "TOMBA_API_KEY",
       "DATAGMA_API_KEY",
+      "SNOV_API_KEY",
+      "SURFE_API_KEY",
       "WIZA_API_KEY",
+      "ROCKETREACH_API_KEY",
       "PEOPLEDATALABS_API_KEY",
       "PROSPEO_API_KEY",
       "APOLLO_API_KEY",
       "CONTACTOUT_API_KEY",
-      "FORAGER_API_KEY"
+      "FORAGER_API_KEY",
+      "DROPCONTACT_API_KEY",
+      "KASPR_API_KEY",
+      "ZELIQ_API_KEY"
     ]
   }
 }

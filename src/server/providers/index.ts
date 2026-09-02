@@ -14,8 +14,10 @@ import type {
   EnrichAttempt,
   EnrichField,
   EnrichProvider,
+  EnrichResult,
   InputRequirement,
   LeadInput,
+  PendingWaterfall,
   RequirementKey,
   WaterfallResult,
 } from "./types";
@@ -23,15 +25,21 @@ import { AnymailFinderProvider } from "./anymailfinder";
 import { ApolloProvider } from "./apollo";
 import { ContactOutProvider } from "./contactout";
 import { DatagmaProvider } from "./datagma";
+import { DropcontactProvider } from "./dropcontact";
 import { FindymailProvider } from "./findymail";
 import { ForagerProvider } from "./forager";
 import { HunterProvider } from "./hunter";
+import { KasprProvider } from "./kaspr";
 import { LeadMagicProvider } from "./leadmagic";
 import { PeopleDataLabsProvider } from "./peopledatalabs";
 import { ProspeoProvider } from "./prospeo";
+import { RocketReachProvider } from "./rocketreach";
 import { SkrappProvider } from "./skrapp";
+import { SnovProvider } from "./snov";
+import { SurfeProvider } from "./surfe";
 import { TombaProvider } from "./tomba";
 import { WizaProvider } from "./wiza";
+import { ZeliqProvider } from "./zeliq";
 
 /**
  * Every known adapter. Registry order is only the *default* — users reorder
@@ -52,6 +60,12 @@ export const REGISTRY: readonly EnrichProvider[] = [
   PeopleDataLabsProvider,
   ContactOutProvider,
   ForagerProvider,
+  SnovProvider,
+  SurfeProvider,
+  RocketReachProvider,
+  KasprProvider,
+  DropcontactProvider,
+  ZeliqProvider,
 ];
 
 /**
@@ -78,6 +92,13 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
   // Apollo sits behind them because it charges on a match even when the address
   // it hands back is a "guessed" one, and ahead of People Data Labs because it
   // at least grades deliverability, which PDL never asserts at all.
+  // Snov, Surfe and Dropcontact join the free-to-miss group: each bills only on
+  // an address returned. Dropcontact is last of them because it answers by
+  // callback, so a lead reaching it waits instead of moving on — a pause worth
+  // taking only after the in-band vendors have had their turn. RocketReach
+  // grades by SMTP but charges a premium-priced credit, so it trails the
+  // one-credit finders. Kaspr and Zeliq close: Kaspr never grades an address
+  // and keys on a profile URL alone; Zeliq is callback-only for both fields.
   email: [
     "findymail",
     "leadmagic",
@@ -86,12 +107,18 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
     "skrapp",
     "tomba",
     "datagma",
+    "snov",
+    "surfe",
     "prospeo",
     "wiza",
+    "rocketreach",
     "apollo",
     "peopledatalabs",
     "contactout",
     "forager",
+    "dropcontact",
+    "kaspr",
+    "zeliq",
   ],
   // Phone runs deeper, and leads with the vendors whose mobile coverage is the
   // product rather than a side line. Prospeo is last of the finders because a
@@ -100,7 +127,23 @@ export const DEFAULT_ORDER: Record<EnrichField, readonly string[]> = {
   // price a mobile at five or more, because mobile coverage is its product
   // rather than a side line — and because it reports its own `creditBurn` per
   // call, so its real cost lands in the ledger instead of an assumption.
-  phone: ["forager", "peopledatalabs", "datagma", "leadmagic", "wiza", "contactout", "prospeo"],
+  // Surfe, RocketReach and Kaspr take one credit for a mobile and go in with the
+  // single-credit finders. Apollo and Zeliq are last: both deliver a phone by
+  // webhook only, so each is a pause, and Apollo's mobile is eight credits.
+  phone: [
+    "forager",
+    "peopledatalabs",
+    "datagma",
+    "surfe",
+    "rocketreach",
+    "kaspr",
+    "leadmagic",
+    "wiza",
+    "contactout",
+    "prospeo",
+    "apollo",
+    "zeliq",
+  ],
 };
 
 /** The shipping default for one field, filtered to adapters that can serve it. */
@@ -174,6 +217,25 @@ export interface WaterfallOptions {
    * touching a vendor.
    */
   registry?: readonly EnrichProvider[];
+  /**
+   * Public URL for this lookup's callback, handed to deferred vendors. One per
+   * call: the token in it is what maps the vendor's POST back to this lead and
+   * field. Without it a deferred vendor cannot be called, and is skipped as an
+   * `error` that says so rather than as a silent miss.
+   */
+  callbackUrl?: string;
+  /**
+   * Continue a paused waterfall. The cache is not re-read (it was checked
+   * before the pause), `startAt` is the index in `order` to continue from, and
+   * the carried credits and fallback are folded into the result. Attempts
+   * before the pause were already written to the ledger by the caller, so the
+   * result's `attempts` holds only what happened since.
+   */
+  resume?: {
+    startAt: number;
+    totalCredits: number;
+    fallback: { value: string; providerId: string } | null;
+  };
 }
 
 /**
@@ -217,6 +279,10 @@ function normalize(input: LeadInput): LeadInput {
  *
  * Never throws: every failure mode becomes an attempt row, so a dead vendor
  * degrades the run instead of failing the batch.
+ *
+ * Returns early with `pending` when it reaches a deferred vendor: the caller
+ * persists that state, and calls again with `resume` once the vendor's answer
+ * arrives — `applyDeferredResult` folds that answer in before the next step.
  */
 export async function runWaterfall(
   field: EnrichField,
@@ -227,7 +293,7 @@ export async function runWaterfall(
   const input = normalize(rawInput);
   const attempts: EnrichAttempt[] = [];
 
-  if (!opts.refresh && opts.cache) {
+  if (!opts.resume && !opts.refresh && opts.cache) {
     const cached = await opts.cache.get(field, input, opts.maxCacheAgeDays ?? CACHE_MAX_AGE_DAYS);
     if (cached) {
       return {
@@ -242,11 +308,12 @@ export async function runWaterfall(
     }
   }
 
-  let fallback: { value: string; providerId: string } | null = null;
-  let totalCredits = 0;
+  let fallback: { value: string; providerId: string } | null = opts.resume?.fallback ?? null;
+  let totalCredits = opts.resume?.totalCredits ?? 0;
   const registry = opts.registry ?? REGISTRY;
 
-  for (const id of opts.order) {
+  for (let position = opts.resume?.startAt ?? 0; position < opts.order.length; position++) {
+    const id = opts.order[position];
     const provider = registry.find((p) => p.id === id);
     if (!provider || !provider.fields.includes(field)) continue;
 
@@ -262,11 +329,16 @@ export async function runWaterfall(
       attempts.push({ providerId: id, field, outcome: "ineligible", creditsUsed: 0, ms: 0, detail: `Needs ${needs}` });
       continue;
     }
+    const deferred = provider.deferred?.includes(field) ?? false;
+    if (deferred && !opts.callbackUrl) {
+      attempts.push({ providerId: id, field, outcome: "error", creditsUsed: 0, ms: 0, detail: `${provider.label} answers by callback, and this deployment has no public callback URL` });
+      continue;
+    }
 
     const started = Date.now();
-    let result;
+    let result: EnrichResult;
     try {
-      result = await provider.find(field, input, apiKey);
+      result = await provider.find(field, input, apiKey, { callbackUrl: opts.callbackUrl });
     } catch (err) {
       // Adapters are contracted not to throw; this is the backstop so one
       // misbehaving vendor cannot take down a 5k-row batch.
@@ -283,15 +355,24 @@ export async function runWaterfall(
     totalCredits += result.creditsUsed;
     attempts.push({ providerId: id, field, outcome: result.outcome, creditsUsed: result.creditsUsed, ms, detail: result.detail });
 
-    if (result.outcome === "hit" && result.value) {
-      if (result.verified) {
-        const hit = { value: result.value, verified: true, providerId: id };
-        await opts.cache?.put(field, input, hit);
-        return { field, ...hit, cached: false, totalCredits, attempts };
+    if (result.outcome === "pending") {
+      // Only a vendor declared deferred may pause the search — anything else
+      // answering `pending` is a bug in the adapter, and treating it as a pause
+      // would park the lead waiting for a callback that never comes.
+      if (!deferred) {
+        attempts[attempts.length - 1] = { ...attempts[attempts.length - 1], outcome: "error", detail: `${provider.label} returned pending but is not a deferred provider` };
+        continue;
       }
-      // Unverified: remember the first one, keep looking for something better.
-      fallback ??= { value: result.value, providerId: id };
+      const pending: PendingWaterfall = { providerId: id, requestId: result.requestId ?? "", position, totalCredits, fallback };
+      return { field, value: null, verified: false, providerId: null, cached: false, totalCredits, attempts, pending };
     }
+
+    const settled = settle(result, id, fallback);
+    if (settled.done) {
+      await opts.cache?.put(field, input, settled.hit);
+      return { field, ...settled.hit, cached: false, totalCredits, attempts };
+    }
+    fallback = settled.fallback;
   }
 
   if (fallback) {
@@ -301,4 +382,64 @@ export async function runWaterfall(
   }
 
   return { field, value: null, verified: false, providerId: null, cached: false, totalCredits, attempts };
+}
+
+/**
+ * The house rule, in one place: a verified hit ends the search; an unverified
+ * one is remembered as the first fallback; anything else changes nothing.
+ */
+function settle(
+  result: EnrichResult,
+  providerId: string,
+  fallback: { value: string; providerId: string } | null,
+):
+  | { done: true; hit: { value: string; verified: true; providerId: string } }
+  | { done: false; fallback: { value: string; providerId: string } | null } {
+  if (result.outcome === "hit" && result.value) {
+    if (result.verified) return { done: true, hit: { value: result.value, verified: true, providerId } };
+    return { done: false, fallback: fallback ?? { value: result.value, providerId } };
+  }
+  return { done: false, fallback };
+}
+
+/**
+ * Fold a deferred vendor's delivered answer into a paused waterfall, then
+ * continue it from the next provider.
+ *
+ * The answer is treated exactly as if the vendor had returned it in-band: a
+ * verified hit ends the search and is cached, an unverified one becomes the
+ * fallback, and a miss or error moves on. The attempt for the answer itself is
+ * the first entry of the returned `attempts`, so the caller records it with
+ * the rest.
+ */
+export async function applyDeferredResult(
+  field: EnrichField,
+  rawInput: LeadInput,
+  env: ConnectionsEnv,
+  paused: PendingWaterfall,
+  answer: EnrichResult,
+  opts: Omit<WaterfallOptions, "resume" | "refresh">,
+): Promise<WaterfallResult> {
+  const input = normalize(rawInput);
+  const totalCredits = paused.totalCredits + answer.creditsUsed;
+  const attempt: EnrichAttempt = {
+    providerId: paused.providerId,
+    field,
+    outcome: answer.outcome === "pending" ? "error" : answer.outcome,
+    creditsUsed: answer.creditsUsed,
+    ms: 0,
+    detail: answer.detail,
+  };
+
+  const settled = settle(answer, paused.providerId, paused.fallback);
+  if (settled.done) {
+    await opts.cache?.put(field, input, settled.hit);
+    return { field, ...settled.hit, cached: false, totalCredits, attempts: [attempt] };
+  }
+
+  const rest = await runWaterfall(field, input, env, {
+    ...opts,
+    resume: { startAt: paused.position + 1, totalCredits, fallback: settled.fallback },
+  });
+  return { ...rest, attempts: [attempt, ...rest.attempts] };
 }

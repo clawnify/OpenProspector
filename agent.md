@@ -105,7 +105,7 @@ be lower than what you sent; the difference is the unenrichable rows.
 | `PATCH /api/runs/{id}` | Report progress: `sourcing` → `done`, or `failed` with a one-line reason. The user's only view into your work. |
 | `POST /api/runs/{id}/enrich` | Enrich every pending lead in a run. Returns `202`; poll `GET /api/leads?run_id=…&enrich_status=pending` to watch it drain. |
 | `GET /api/leads/{id}` | One lead **plus its attempt log** — how you answer "why has this lead got no email?" |
-| `POST /api/leads/{id}/enrich` | One lead. Cache by default (**free**); `?refresh=true` re-buys and always costs. |
+| `POST /api/leads/{id}/enrich` | One lead. Cache by default (**free**); `?refresh=true` re-buys and always costs. Comes back `enrich_status: waiting` when it paused on a vendor that answers by callback — poll `GET /api/leads/{id}` rather than calling enrich again, which would cancel the wait. |
 | `GET /api/providers?credits=true` | Which vendors are configured and their remaining balances. |
 | `PUT /api/waterfall/{field}` | Reorder the `email` or `phone` waterfall. |
 | `GET /api/export/leads.csv` | Hand the user a file. **Don't call this to read data** — it returns up to 1000 rows and will flood your context; use `GET /api/leads` instead. Add `?format=linkedin-contacts` or `?format=linkedin-companies` when the user wants a LinkedIn Matched Audiences upload; the company list is deduplicated for them. |
@@ -120,7 +120,8 @@ be lower than what you sent; the difference is the unenrichable rows.
 | `ineligible` | Lead lacked the inputs that provider needs — usually a domain, or a missing profile URL on the phone waterfall. **Your** fix: source a better row. |
 | `unconfigured` | No API key for that vendor. Tell the user which key would have run. |
 | `no_credits` | Vendor balance exhausted; the user must top up. |
-| `error` | Vendor/transport failure. The waterfall continued to the next provider. |
+| `pending` | Provider answers by callback; the lead is `waiting` on it (at most 10 minutes). A second row with the real outcome follows. |
+| `error` | Vendor/transport failure, or a callback that never came. The waterfall continued to the next provider. |
 
 If coverage looks poor, read the log before blaming the data: `ineligible` means
 the sourcing was thin, `unconfigured` means the waterfall is short a vendor.

@@ -97,7 +97,11 @@ export function App() {
   // Poll only while the agent is actually working. A run that is done, failed or
   // stalled will not change on its own, so polling then is pure noise — and this
   // app is embedded in a dashboard iframe that may sit open all day.
-  const hasLiveRun = runs.some((r) => !r.stale && (r.status === "sourcing" || r.status === "enriching"));
+  const hasLiveRun =
+    runs.some((r) => !r.stale && (r.status === "sourcing" || r.status === "enriching")) ||
+    // A lead parked on a vendor callback resolves out of band, with no run to
+    // watch when it was enriched by hand — so it is a live signal on its own.
+    leads.some((l) => l.enrich_status === "waiting");
   useEffect(() => {
     if (!hasLiveRun) return;
     const t = setInterval(() => {

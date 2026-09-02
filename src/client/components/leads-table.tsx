@@ -2,7 +2,7 @@
 // "where did this email come from?" is answerable without opening anything.
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Download, Loader2, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, Clock, Download, Loader2, RefreshCw, Search } from "lucide-react";
 import { Badge, Button, Card, Chip, Empty, Eyebrow, Favicon, Zone } from "./ui";
 import type { Lead, Provider } from "../api";
 
@@ -11,6 +11,15 @@ function StatusBadge({ lead }: { lead: Lead }) {
     return (
       <Badge tone="neutral">
         <Loader2 size={11} className="animate-spin" /> Enriching
+      </Badge>
+    );
+  }
+  if (lead.enrich_status === "waiting") {
+    // Parked on a vendor that answers by callback. Not "running": nothing is
+    // happening on our side, and the wait is bounded by the callback timeout.
+    return (
+      <Badge tone="neutral">
+        <Clock size={11} /> Awaiting callback
       </Badge>
     );
   }

@@ -50,6 +50,8 @@ export interface Provider {
   key_format?: string;
   /** Why a planned vendor is not shipped yet. */
   blocked_by?: string;
+  /** Fields answered by callback: a lead reaching this vendor for one of them waits instead of resolving in the same pass. */
+  deferred?: string[];
   credits_remaining?: number | null;
 }
 

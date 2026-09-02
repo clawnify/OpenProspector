@@ -17,14 +17,21 @@ import { ApolloProvider } from "./apollo";
 import { BytemineProvider } from "./bytemine";
 import { ContactOutProvider } from "./contactout";
 import { DatagmaProvider } from "./datagma";
+import { DropcontactProvider } from "./dropcontact";
 import { ForagerProvider } from "./forager";
 import { HunterProvider } from "./hunter";
+import { KasprProvider } from "./kaspr";
 import { LeadMagicProvider } from "./leadmagic";
 import { PeopleDataLabsProvider } from "./peopledatalabs";
 import { ProspeoProvider } from "./prospeo";
+import { RocketReachProvider } from "./rocketreach";
 import { SkrappProvider } from "./skrapp";
+import { SnovProvider } from "./snov";
+import { SurfeProvider } from "./surfe";
 import { TombaProvider } from "./tomba";
+import { POLL } from "./vendor";
 import { POLL as WIZA_POLL, WizaProvider } from "./wiza";
+import { ZeliqProvider } from "./zeliq";
 import type { EnrichProvider } from "./types";
 
 interface Call {
@@ -36,6 +43,15 @@ interface Call {
 
 const calls: Call[] = [];
 
+/** Request bodies are JSON everywhere but Snov's token call, which is a form. */
+function parseBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
+}
+
 /** Stub fetch with a queue of `[status, body]` answers, in call order. */
 function stub(...answers: [number, unknown][]) {
   calls.length = 0;
@@ -45,7 +61,7 @@ function stub(...answers: [number, unknown][]) {
       url: String(url),
       method: init.method ?? "GET",
       headers: (init.headers ?? {}) as Record<string, string>,
-      body: init.body ? JSON.parse(String(init.body)) : undefined,
+      body: init.body ? parseBody(String(init.body)) : undefined,
     });
     const [status, body] = answers[Math.min(i++, answers.length - 1)];
     return {
@@ -58,9 +74,13 @@ function stub(...answers: [number, unknown][]) {
   });
 }
 
-// Exercise Wiza's real poll loop without sleeping through its real schedule.
+// Exercise the real poll loops without sleeping through their real schedules.
 WIZA_POLL.firstPollMs = 0;
 WIZA_POLL.intervalMs = 0;
+POLL.firstPollMs = 0;
+POLL.intervalMs = 0;
+
+const CALLBACK = "https://x.apps.clawnify.com/api/callbacks/00000000-0000-4000-8000-000000000000";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -383,12 +403,55 @@ describe("Apollo", () => {
     expect(calls[0].url).toContain("domain=acme.com");
   });
 
-  it("never asks for a phone, because that answer would arrive by webhook", async () => {
+  it("does not ask for a phone on an email lookup, so no webhook credit is spent", async () => {
     stub([200, { person: { email: "ada@acme.com", email_status: "verified" } }]);
-    await ApolloProvider.find("email", LEAD, "k");
+    await ApolloProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK });
     expect(calls[0].url).not.toContain("reveal_phone_number");
     expect(calls[0].url).not.toContain("run_waterfall");
-    expect(ApolloProvider.fields).toEqual(["email"]);
+    expect(ApolloProvider.deferred).toEqual(["phone"]);
+  });
+
+  it("asks for the phone with the callback URL as webhook, and pauses on the ack", async () => {
+    stub([200, { request_id: 1039995589705121900, person: { id: "p1", email: "ada@acme.com" } }]);
+    const r = await ApolloProvider.find("phone", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r).toMatchObject({ outcome: "pending", creditsUsed: 0 });
+    expect(r.requestId).toBe("1039995589705121900");
+    const url = new URL(calls[0].url);
+    expect(url.searchParams.get("reveal_phone_number")).toBe("true");
+    expect(url.searchParams.get("webhook_url")).toBe(CALLBACK);
+  });
+
+  it("uses a number Apollo already revealed for the team without waiting", async () => {
+    stub([200, { person: { contact: { phone_numbers: [{ sanitized_number: "+12025550116", type_cd: "mobile", status_cd: "valid_number" }] } } }]);
+    const r = await ApolloProvider.find("phone", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r).toMatchObject({ outcome: "hit", value: "+12025550116", verified: true, creditsUsed: 0 });
+  });
+
+  it("refuses a phone lookup without a callback URL rather than spending on an undeliverable webhook", async () => {
+    stub([200, {}]);
+    const r = await ApolloProvider.find("phone", LEAD, "k");
+    expect(r.outcome).toBe("error");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("reads the webhook: a valid mobile first, at the credits the payload reports", () => {
+    const r = ApolloProvider.parseCallback!("phone", {
+      status: "success",
+      credits_consumed: 8,
+      people: [{
+        status: "success",
+        phone_numbers: [
+          { sanitized_number: "+12025550142", type_cd: "work_direct", status_cd: "valid_number" },
+          { sanitized_number: "+12025550116", type_cd: "mobile", status_cd: "valid_number" },
+        ],
+      }],
+    });
+    expect(r).toMatchObject({ outcome: "hit", value: "+12025550116", verified: true, creditsUsed: 8 });
+  });
+
+  it("reads an empty webhook as a miss that cost nothing", () => {
+    const r = ApolloProvider.parseCallback!("phone", { status: "success", missing_records: 1, people: [{ status: "no_data", phone_numbers: [] }] });
+    expect(r).toMatchObject({ outcome: "miss", creditsUsed: 0 });
   });
 
   it("keeps a guessed address, but not as a verified one", async () => {
@@ -598,4 +661,240 @@ describe("every adapter", () => {
       await expect(p.find(p.fields[0], LEAD, keyFor(p)), p.id).resolves.toBeDefined();
     }
   });
+});
+
+describe("Dropcontact", () => {
+  it("starts the batch with this lead's callback URL and pauses on the request id", async () => {
+    stub([200, { error: false, success: true, request_id: "pdvlsouuvvbnrlz", credits_left: 25 }]);
+    const r = await DropcontactProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r).toMatchObject({ outcome: "pending", requestId: "pdvlsouuvvbnrlz", creditsUsed: 0 });
+    expect(calls[0].url).toBe("https://api.dropcontact.com/v1/enrich/all");
+    expect(calls[0].headers["X-Access-Token"]).toBe("k");
+    expect(calls[0].body).toEqual({
+      data: [{ linkedin: LEAD.linkedinUrl, first_name: "Ada", last_name: "Lovelace", website: "acme.com", company: "Acme" }],
+      language: "en",
+      custom_callback_url: CALLBACK,
+    });
+  });
+
+  it("surfaces a per-row rejection instead of waiting for a callback that will never come", async () => {
+    stub([200, { success: true, request_id: "x", data: [{ index: 1, errors: { only_contact_data: true } }] }]);
+    const r = await DropcontactProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r.outcome).toBe("error");
+    expect(r.detail).toContain("only_contact_data");
+  });
+
+  it("reads the webhook: a nominative professional address is a verified hit", () => {
+    const r = DropcontactProvider.parseCallback!("email", [
+      {
+        event_type: "enrich_api_result",
+        data: {
+          request_id: "pdvlsouuvvbnrlz",
+          data: [{ first_name: "Ada", email: [{ email: "contact@acme.com", qualification: "generic@pro" }, { email: "ada@acme.com", qualification: "nominative@pro" }] }],
+        },
+      },
+    ]);
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+  });
+
+  it("keeps a catch-all address only as an unverified fallback, and treats generic-only as a miss", () => {
+    const catchAll = DropcontactProvider.parseCallback!("email", [{ data: { data: [{ email: [{ email: "ada@acme.com", qualification: "catch_all@pro" }] }] } }]);
+    expect(catchAll).toMatchObject({ outcome: "hit", verified: false });
+    const generic = DropcontactProvider.parseCallback!("email", [{ data: { data: [{ email: [{ email: "info@acme.com", qualification: "generic@pro" }] }] } }]);
+    expect(generic).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+    const echoed = DropcontactProvider.parseCallback!("email", [{ data: { data: [{ first_name: "Ada", last_name: "Lovelace" }] } }]);
+    expect(echoed).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps a spent quota (403) to no_credits, and a bad token (401) to unconfigured", async () => {
+    stub([403, { error: true }]);
+    expect((await DropcontactProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK })).outcome).toBe("no_credits");
+    await assertKeyRejectionIsUnconfigured({ ...DropcontactProvider, find: (f, i, k) => DropcontactProvider.find(f, i, k, { callbackUrl: CALLBACK }) });
+  });
+
+  it("needs a profile URL, or a name with a domain or company", () => {
+    expect(DropcontactProvider.requirements("email")).toEqual([["linkedinUrl", "fullName"], ["linkedinUrl", "domain", "company"]]);
+    expect(DropcontactProvider.deferred).toEqual(["email"]);
+  });
+});
+
+describe("Snov.io", () => {
+  const TOKEN = [200, { access_token: "tok", token_type: "Bearer", expires_in: 3600 }] as [number, unknown];
+
+  it("mints a bearer token from clientId:clientSecret, starts the task, and polls the result", async () => {
+    stub(
+      TOKEN,
+      [200, { data: { task_hash: "005ffad65aad581943cf65a45112ca7a" } }],
+      [200, { status: "in_progress" }],
+      [200, { status: "completed", data: [{ people: "Ada Lovelace", result: [{ email: "ada@acme.com", smtp_status: "valid" }] }] }],
+    );
+    const r = await SnovProvider.find("email", LEAD, "id:secret");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].url).toBe("https://api.snov.io/v1/oauth/access_token");
+    expect(calls[1].url).toBe("https://api.snov.io/v2/emails-by-domain-by-name/start");
+    expect(calls[1].headers.Authorization).toBe("Bearer tok");
+    expect(calls[1].body).toEqual({ rows: [{ first_name: "Ada", last_name: "Lovelace", domain: "acme.com" }] });
+    expect(calls[3].url).toContain("/v2/emails-by-domain-by-name/result?task_hash=005ffad65aad581943cf65a45112ca7a");
+  });
+
+  it("reuses the token across calls, so a batch does not mint one per lead", async () => {
+    stub([200, { data: { task_hash: "h" } }], [200, { status: "completed", data: [{ result: [] }] }]);
+    const r = await SnovProvider.find("email", { ...LEAD, fullName: "Bob Builder" }, "id:secret");
+    expect(r).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+    expect(calls[0].url).toContain("/start"); // no token call first
+  });
+
+  it("keeps an unverifiable address only as a fallback, and maps not_enough_credits", async () => {
+    stub([200, { data: { task_hash: "h" } }], [200, { status: "completed", data: [{ result: [{ email: "ada@acme.com", smtp_status: "unknown", unknown_status_reason: "catchall" }] }] }]);
+    expect(await SnovProvider.find("email", LEAD, "id:secret")).toMatchObject({ outcome: "hit", verified: false, creditsUsed: 1 });
+    stub([200, { data: { task_hash: "h" } }], [200, { status: "not_enough_credits" }]);
+    expect(await SnovProvider.find("email", LEAD, "id:secret")).toMatchObject({ outcome: "no_credits", creditsUsed: 0 });
+  });
+
+  it("maps rejected client credentials to unconfigured, and a malformed secret too", async () => {
+    stub([401, { message: "invalid_client" }]);
+    expect((await SnovProvider.find("email", LEAD, "other:bad")).outcome).toBe("unconfigured");
+    expect((await SnovProvider.find("email", LEAD, "no-colon")).outcome).toBe("unconfigured");
+  });
+
+  it("needs a first and last name plus a domain — a profile URL is no shortcut here", () => {
+    expect(SnovProvider.requirements("email")).toEqual(["fullName", "domain"]);
+    expect(SnovProvider.keyFormat).toBe("clientId:clientSecret");
+  });
+});
+
+describe("RocketReach", () => {
+  it("looks up by GET with Api-Key and polls checkStatus until the profile completes", async () => {
+    stub(
+      [200, { id: 5244, status: "searching" }],
+      [200, [{ id: 5244, status: "progress" }]],
+      [200, [{ id: 5244, status: "complete", recommended_professional_email: "ada@acme.com", emails: [{ email: "ada@acme.com", smtp_valid: "valid", type: "professional", grade: "A" }] }]],
+    );
+    const r = await RocketReachProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].headers["Api-Key"]).toBe("k");
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe("/api/v2/person/lookup");
+    expect(url.searchParams.get("lookup_type")).toBe("standard");
+    expect(url.searchParams.get("linkedin_url")).toBe(LEAD.linkedinUrl);
+    expect(calls[1].url).toBe("https://api.rocketreach.co/api/v2/person/checkStatus?ids=5244");
+  });
+
+  it("asks for a premium lookup on the phone field and prefers a recommended mobile", async () => {
+    stub([200, { id: 1, status: "complete", phones: [{ number: "+1 555 0100", e164: "+15550100", type: "direct dial" }, { number: "+1 555 0199", e164: "+15550199", type: "mobile", recommended: true }] }]);
+    const r = await RocketReachProvider.find("phone", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "+15550199", verified: true, creditsUsed: 1 });
+    expect(new URL(calls[0].url).searchParams.get("lookup_type")).toBe("premium");
+  });
+
+  it("charges nothing for a completed profile with no professional address", async () => {
+    stub([200, { id: 1, status: "complete", emails: [{ email: "ada@gmail.com", smtp_valid: "valid", type: "personal" }] }]);
+    expect(await RocketReachProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(RocketReachProvider));
+});
+
+describe("Surfe", () => {
+  it("starts the enrichment, polls it, and returns a VALID professional address as verified", async () => {
+    stub(
+      [202, { enrichmentID: "0195be44", message: "Your enrichment has started" }],
+      [200, { status: "IN_PROGRESS", people: [{ status: "IN_PROGRESS" }] }],
+      [200, { status: "COMPLETED", people: [{ status: "COMPLETED", emails: [{ email: "ada@acme.com", emailType: "professional", validationStatus: "VALID" }] }] }],
+    );
+    const r = await SurfeProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+    expect(calls[0].url).toBe("https://api.surfe.com/v2/people/enrich");
+    expect(calls[0].headers.Authorization).toBe("Bearer k");
+    expect(calls[0].body).toMatchObject({ include: { email: true }, enrichmentOptions: { acceptedEmailType: "professional" } });
+    expect((calls[0].body as { people: unknown[] }).people[0]).toMatchObject({ firstName: "Ada", lastName: "Lovelace", companyDomain: "acme.com", linkedinUrl: LEAD.linkedinUrl });
+    expect(calls[1].url).toBe("https://api.surfe.com/v2/people/enrich/0195be44");
+  });
+
+  it("asks only for a mobile on the phone field, so no email credit is spent, and takes the most confident number", async () => {
+    stub(
+      [202, { enrichmentID: "e" }],
+      [200, { status: "COMPLETED", people: [{ status: "COMPLETED", mobilePhones: [{ mobilePhone: "+33 6 00 00 00 01", confidenceScore: 0.4 }, { mobilePhone: "+33 6 12 34 56 78", confidenceScore: 0.8 }] }] }],
+    );
+    const r = await SurfeProvider.find("phone", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "+33 6 12 34 56 78", verified: true, creditsUsed: 1 });
+    const sent = calls[0].body as { include: unknown; enrichmentOptions?: unknown };
+    expect(sent.include).toEqual({ mobile: true });
+    expect(sent.enrichmentOptions).toBeUndefined();
+  });
+
+  it("treats NOT_FOUND as a free miss, and a 403 as no credits", async () => {
+    stub([202, { enrichmentID: "e" }], [200, { status: "COMPLETED", people: [{ status: "NOT_FOUND" }] }]);
+    expect(await SurfeProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+    stub([403, { code: 403, message: "quota" }]);
+    expect(await SurfeProvider.find("email", LEAD, "k")).toMatchObject({ outcome: "no_credits" });
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(SurfeProvider));
+});
+
+describe("Zeliq", () => {
+  it("posts the email request with the callback URL and pauses on an acknowledgement", async () => {
+    stub([200, { message: "queued" }]);
+    const r = await ZeliqProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r).toMatchObject({ outcome: "pending", creditsUsed: 0 });
+    expect(calls[0].url).toBe("https://api.zeliq.com/api/contact/enrich/email");
+    expect(calls[0].headers["x-api-key"]).toBe("k");
+    expect(calls[0].body).toEqual({ linkedin_url: LEAD.linkedinUrl, first_name: "Ada", last_name: "Lovelace", company: "acme.com", callback_url: CALLBACK });
+  });
+
+  it("uses a result that arrives in the response itself without waiting", async () => {
+    stub([200, { credit_used: "2", contact: { most_probable_email: "ada@acme.com", most_probable_email_status: "safe to send" } }]);
+    const r = await ZeliqProvider.find("email", LEAD, "k", { callbackUrl: CALLBACK });
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 2 });
+  });
+
+  it("keys a phone lookup on the profile URL or email only, and reads the callback at the credits it reports", async () => {
+    stub([200, {}]);
+    await ZeliqProvider.find("phone", { ...LEAD, email: "ada@acme.com" }, "k", { callbackUrl: CALLBACK });
+    expect(calls[0].url).toBe("https://api.zeliq.com/api/contact/enrich/phone");
+    expect(calls[0].body).toEqual({ linkedin_url: LEAD.linkedinUrl, email: "ada@acme.com", callback_url: CALLBACK });
+    const r = ZeliqProvider.parseCallback!("phone", { credit_used: "15", contact: { most_probable_phone: "+33666666666", phones: [{ phone: "+33666666666" }] } });
+    expect(r).toMatchObject({ outcome: "hit", value: "+33666666666", verified: true, creditsUsed: 15 });
+    expect(ZeliqProvider.parseCallback!("phone", { contact: {} })).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps a rejected key to unconfigured", () =>
+    assertKeyRejectionIsUnconfigured({ ...ZeliqProvider, find: (f, i, k) => ZeliqProvider.find(f, i, k, { callbackUrl: CALLBACK }) }));
+
+  it("is deferred on both fields", () => {
+    expect(ZeliqProvider.deferred).toEqual(["email", "phone"]);
+    expect(ZeliqProvider.requirements("phone")).toEqual([["linkedinUrl", "email"]]);
+  });
+});
+
+describe("Kaspr", () => {
+  it("sends the bare LinkedIn slug with the v2 header, and only pays for the field it needs", async () => {
+    stub([200, { profile: { starryProfessionalEmail: "ada@acme.com", professionalEmails: ["ada@acme.com", "a.lovelace@acme.com"] } }]);
+    const r = await KasprProvider.find("email", LEAD, "k");
+    expect(r).toMatchObject({ outcome: "hit", value: "ada@acme.com", verified: false, creditsUsed: 1 });
+    expect(calls[0].url).toBe("https://api.developers.kaspr.io/profile/linkedin");
+    expect(calls[0].headers.Authorization).toBe("Bearer k");
+    expect(calls[0].headers["accept-version"]).toBe("v2.0");
+    expect(calls[0].body).toEqual({ id: "ada-lovelace", name: "Ada Lovelace", dataToGet: ["workEmail"], requiredData: ["workEmail"] });
+  });
+
+  it("compacts the spaced phone Kaspr returns, and treats an empty body as a miss", async () => {
+    stub([200, { profile: { starryPhone: "+1 202 007 0123", phones: ["+1 202 007 0123"] } }]);
+    expect(await KasprProvider.find("phone", LEAD, "k")).toMatchObject({ outcome: "hit", value: "+12020070123", verified: true, creditsUsed: 1 });
+    stub([200, undefined]);
+    expect(await KasprProvider.find("phone", LEAD, "k")).toMatchObject({ outcome: "miss", creditsUsed: 0 });
+  });
+
+  it("maps an exhausted credit pool (402) to no_credits", async () => {
+    stub([402, { message: "No credits left", reason: "No phone credits left" }]);
+    expect(await KasprProvider.find("phone", LEAD, "k")).toMatchObject({ outcome: "no_credits", creditsUsed: 0 });
+  });
+
+  it("needs a profile URL and a name, and nothing else helps", () => {
+    expect(KasprProvider.requirements("email")).toEqual(["linkedinUrl", "fullName"]);
+  });
+
+  it("maps a rejected key to unconfigured", () => assertKeyRejectionIsUnconfigured(KasprProvider));
 });

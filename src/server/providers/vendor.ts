@@ -95,3 +95,45 @@ export function linkedinSlug(url: string | undefined): string | null {
   const m = /\/in\/([^/?#]+)/.exec(url);
   return m ? decodeURIComponent(m[1]) : null;
 }
+
+/** First and last name, from parts when we have them and from `fullName` otherwise. */
+export function nameParts(input: { firstName?: string; lastName?: string; fullName?: string }): { first: string; last: string } | null {
+  if (input.firstName && input.lastName) return { first: input.firstName, last: input.lastName };
+  const parts = (input.fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
+/**
+ * Polling schedule for vendors that accept a lookup and finish it a few
+ * seconds later. Shared by the adapters that poll in-band, and mutable so the
+ * tests can run the real loop without sleeping through it.
+ *
+ * shortcut: a hard wall-clock cap, same trade as Wiza's — the alternative is
+ * the deferred path, which only helps vendors that deliver by callback. A
+ * timeout here is a paid-for result we drop, so the vendor's own id goes into
+ * the attempt detail for retrieval by hand.
+ */
+export const POLL = {
+  maxWaitMs: 25_000,
+  firstPollMs: 1_000,
+  intervalMs: 1_500,
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Call `check` on the schedule until it settles or the cap is reached.
+ * `check` returns `{ done: true, value }` when the vendor has finished, or
+ * `{ done: false }` to keep waiting; `null` on timeout.
+ */
+export async function pollUntil<T>(check: () => Promise<{ done: true; value: T } | { done: false }>): Promise<T | null> {
+  const deadline = Date.now() + POLL.maxWaitMs;
+  await sleep(POLL.firstPollMs);
+  for (;;) {
+    const r = await check();
+    if (r.done) return r.value;
+    if (Date.now() + POLL.intervalMs > deadline) return null;
+    await sleep(POLL.intervalMs);
+  }
+}
