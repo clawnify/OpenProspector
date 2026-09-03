@@ -5,6 +5,7 @@ import { get, query, run } from "./db.js";
 import { d1Cache, recordAttempts, runCredits } from "./cache.js";
 import { REGISTRY, defaultOrder, providerById, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
 import { plannedForField } from "./providers/planned.js";
+import { companyDefaultOrder } from "./providers/company.js";
 import {
   FIELDS,
   CALLBACK_TIMEOUT_MINUTES,
@@ -18,7 +19,7 @@ import {
 } from "./enrich.js";
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
-import type { EnrichField, EnrichResult } from "./providers/types.js";
+import type { EnrichField, EnrichResult, LedgerField } from "./providers/types.js";
 
 type Env = {
   Bindings: {
@@ -154,12 +155,15 @@ function paging(q: { page?: string; limit?: string }) {
  * default for that field. Unknown ids are dropped here rather than in the runner
  * so a vendor removed from the registry can't wedge an existing config.
  */
-async function waterfallOrder(field: EnrichField): Promise<string[]> {
+async function waterfallOrder(field: LedgerField): Promise<string[]> {
   const row = await get<{ provider_order: string }>(
     "SELECT provider_order FROM waterfall_config WHERE field = ?",
     [field],
   );
-  const known = defaultOrder(field);
+  // The company waterfall stores its order in the same table under its own
+  // `field` row — one config surface for all three, rather than a second table
+  // that would need its own route, migration and UI.
+  const known = field === "company" ? companyDefaultOrder() : defaultOrder(field);
   if (!row?.provider_order) return known;
   try {
     const parsed = JSON.parse(row.provider_order) as unknown;
@@ -798,6 +802,7 @@ const STRANDED_AFTER = "-15 minutes";
 async function enrichOptions(c: { req: { url: string } }, refresh = false): Promise<EnrichOptions> {
   return {
     orders: { email: await waterfallOrder("email"), phone: await waterfallOrder("phone") },
+    companyOrder: await waterfallOrder("company"),
     // The app's own origin — no configured base URL to drift from reality.
     origin: new URL(c.req.url).origin,
     refresh,

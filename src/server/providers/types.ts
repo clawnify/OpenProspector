@@ -137,10 +137,18 @@ export interface EnrichProvider {
   credits?(apiKey: string): Promise<CreditBalance>;
 }
 
+/**
+ * What an attempt-log row can be about. Wider than EnrichField because the
+ * ledger spans both subjects this app buys: the two person fields, and the
+ * company record. One ledger, so "what did this run cost me?" has a single
+ * answer rather than one per subject.
+ */
+export type LedgerField = EnrichField | "company";
+
 /** One row of the attempt log — why a lead resolved the way it did, and what it cost. */
 export interface EnrichAttempt {
   providerId: string;
-  field: EnrichField;
+  field: LedgerField;
   outcome: AttemptOutcome;
   creditsUsed: number;
   detail?: string;

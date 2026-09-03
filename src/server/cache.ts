@@ -6,7 +6,8 @@
 
 import { get, query, run } from "./db.js";
 import { cacheKey, type EnrichCache } from "./providers/index.js";
-import type { EnrichAttempt, EnrichField, LeadInput } from "./providers/types.js";
+import type { CompanyStore } from "./providers/company.js";
+import type { CompanyRecord, EnrichAttempt, EnrichField, LeadInput } from "./providers/types.js";
 
 /**
  * Staleness is evaluated by SQLite, not JS, on purpose: `found_at` is written by
@@ -48,6 +49,84 @@ export const d1Cache: EnrichCache = {
          provider_id = excluded.provider_id,
          found_at = excluded.found_at`,
       [cacheKey(field, input), field, hit.value, hit.verified ? 1 : 0, hit.providerId],
+    );
+  },
+};
+
+/**
+ * D1-backed CompanyStore. Shares the read/write shape of d1Cache above, but
+ * against `companies` and on its own, longer staleness window — see
+ * COMPANY_CACHE_MAX_AGE_DAYS for why firmographics are not on the 90-day
+ * contact clock.
+ *
+ * Unlike the enrichment cache there is no purge: this table is the app's record
+ * of the accounts in its pipeline, not a copy of one, and its columns are
+ * business identity rather than an individual's contact details.
+ */
+export const d1CompanyStore: CompanyStore = {
+  async get(domain: string, maxAgeDays: number) {
+    const row = await get<Record<string, unknown>>(
+      `SELECT name, linkedin_url, industry, city, state, country, postal_code,
+              stock_symbol, employee_count, founded_year
+         FROM companies
+        WHERE domain = ? AND found_at >= ${AGE_CUTOFF_SQL}`,
+      [domain, ageModifier(maxAgeDays)],
+    );
+    if (!row) return null;
+    // Empty strings become `undefined` so a caller can tell "we never learned
+    // this" from "the vendor told us it is blank" — the export relies on the
+    // difference to decide whether to fall back to the lead's own location.
+    const text = (v: unknown) => (String(v ?? "").trim() || undefined);
+    const num = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
+    return {
+      name: text(row.name),
+      linkedinUrl: text(row.linkedin_url),
+      industry: text(row.industry),
+      city: text(row.city),
+      state: text(row.state),
+      country: text(row.country),
+      postalCode: text(row.postal_code),
+      stockSymbol: text(row.stock_symbol),
+      employeeCount: num(row.employee_count),
+      foundedYear: num(row.founded_year),
+    } satisfies CompanyRecord;
+  },
+
+  async put(domain: string, record: CompanyRecord, providerId: string) {
+    // Re-resolving refreshes found_at, so a company we keep confirming stays
+    // fresh rather than expiring on a fixed birthday — same rule as the cache.
+    await run(
+      `INSERT INTO companies (domain, name, linkedin_url, industry, city, state, country,
+                              postal_code, stock_symbol, employee_count, founded_year,
+                              provider_id, found_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(domain) DO UPDATE SET
+         name = excluded.name,
+         linkedin_url = excluded.linkedin_url,
+         industry = excluded.industry,
+         city = excluded.city,
+         state = excluded.state,
+         country = excluded.country,
+         postal_code = excluded.postal_code,
+         stock_symbol = excluded.stock_symbol,
+         employee_count = excluded.employee_count,
+         founded_year = excluded.founded_year,
+         provider_id = excluded.provider_id,
+         found_at = excluded.found_at`,
+      [
+        domain,
+        record.name ?? "",
+        record.linkedinUrl ?? "",
+        record.industry ?? "",
+        record.city ?? "",
+        record.state ?? "",
+        record.country ?? "",
+        record.postalCode ?? "",
+        record.stockSymbol ?? "",
+        record.employeeCount ?? null,
+        record.foundedYear ?? null,
+        providerId,
+      ],
     );
   },
 };
