@@ -34,8 +34,19 @@
 import { secret, type ConnectionsEnv } from "@clawnify/connections";
 import type { CompanyProvider, CompanyRecord, EnrichAttempt } from "./types";
 import { ApolloCompanyProvider } from "./apollo";
+import { ContactOutCompanyProvider } from "./contactout";
+import { DatagmaCompanyProvider } from "./datagma";
+import { FindymailCompanyProvider } from "./findymail";
+import { ForagerCompanyProvider } from "./forager";
 import { HunterCompanyProvider } from "./hunter";
+import { LeadMagicCompanyProvider } from "./leadmagic";
 import { PeopleDataLabsCompanyProvider } from "./peopledatalabs";
+import { ProspeoCompanyProvider } from "./prospeo";
+import { RocketReachCompanyProvider } from "./rocketreach";
+import { SnovCompanyProvider } from "./snov";
+import { SurfeCompanyProvider } from "./surfe";
+import { TombaCompanyProvider } from "./tomba";
+import { WizaCompanyProvider } from "./wiza";
 
 /**
  * Every known company adapter. As with REGISTRY, order here is only the
@@ -44,7 +55,18 @@ import { PeopleDataLabsCompanyProvider } from "./peopledatalabs";
 export const COMPANY_REGISTRY: readonly CompanyProvider[] = [
   ApolloCompanyProvider,
   HunterCompanyProvider,
+  WizaCompanyProvider,
+  RocketReachCompanyProvider,
   PeopleDataLabsCompanyProvider,
+  ProspeoCompanyProvider,
+  LeadMagicCompanyProvider,
+  DatagmaCompanyProvider,
+  TombaCompanyProvider,
+  ForagerCompanyProvider,
+  FindymailCompanyProvider,
+  ContactOutCompanyProvider,
+  SurfeCompanyProvider,
+  SnovCompanyProvider,
 ];
 
 /**
@@ -56,20 +78,61 @@ export const COMPANY_REGISTRY: readonly CompanyProvider[] = [
  * firmographic vendor is only worth reaching for when those miss.
  */
 export const COMPANY_DEFAULT_ORDER: readonly string[] = [
+  // Ordered on two axes at once, because the runner now fills gaps: what a call
+  // costs, and how much of the record it can close. A vendor that answers the
+  // whole record in one call ends the run there, so depth of coverage IS a cost
+  // saving and not just a quality one — which is why the four full-coverage
+  // vendors lead, ahead of cheaper vendors that would leave columns open and
+  // force a second call anyway.
+
   // Apollo first for one reason that outranks coverage: its key works on the
   // free plan, so it is the only vendor here a user can turn on without buying
   // anything. It also fills every column the LinkedIn upload asks for,
   // including the ticker.
   "apollo-company",
-  // Hunter next. Its `category.industry` and `geo.*` are the cleanest
-  // structured location of the three, and a user running the email waterfall
+  // Hunter next. Also all ten fields, and a user running the email waterfall
   // very likely already holds the key.
   "hunter-company",
-  // People Data Labs last of the three. Not because it is worse — its coverage
-  // is the deepest — but because it bills per match on a plan with a monthly
-  // floor, while the two above are already paid for by anyone running the
-  // person waterfall. Cheapest-already-owned first, same doctrine as email.
+  // Wiza and RocketReach close the full-coverage group: both return all ten
+  // including ticker and postal code. Wiza leads on price transparency — it
+  // echoes what it charged, so the ledger records the truth rather than an
+  // assumption — while RocketReach documents no per-company price at all.
+  "wiza-company",
+  "rocketreach-company",
+
+  // Then the bill-only-on-a-match vendors that leave one or two columns open.
+  // People Data Labs would sit with the full-coverage group on data, and does
+  // not, because it bills per match on a plan with a monthly floor while the
+  // vendors above are already paid for by anyone running the person waterfall.
+  // Cheapest-already-owned first, same doctrine as email.
   "peopledatalabs-company",
+  // Prospeo and LeadMagic are the cheapest misses in the group: Prospeo bills
+  // nothing on a no-match and nothing to re-enrich inside 90 days, LeadMagic
+  // nothing when no company is found. Neither returns a ticker or a postal
+  // code, and neither of those is essential, so a hit here still ends the run.
+  "prospeo-company",
+  "leadmagic-company",
+  // Datagma reports its own `creditBurn`, so its real cost lands in the ledger
+  // rather than an assumption, and it does carry the postal code.
+  "datagma-company",
+  "tomba-company",
+  "forager-company",
+
+  // The partial-coverage tail. Each of these can only ever close part of the
+  // record, so they earn a call when the vendors above left an essential field
+  // open — which is precisely what `covers` lets the runner decide, rather than
+  // this ordering having to guess.
+  //
+  // Findymail before ContactOut: it carries city and state where ContactOut has
+  // only a free-text HQ line and a country.
+  "findymail-company",
+  "contactout-company",
+  // Surfe has no city at all, and is an async round trip on top.
+  "surfe-company",
+  // Snov last, and not for coverage alone. It is the one vendor here that
+  // charges per *request* rather than per match, so a miss costs a credit —
+  // the exact opposite of the free-to-miss vendors near the top.
+  "snov-company",
 ];
 
 /**

@@ -164,3 +164,24 @@ export function absoluteLinkedIn(raw: string | null | undefined): string | undef
   const m = /^(company|showcase|school)\/([^/?#]+)/i.exec(path);
   return m ? `https://www.linkedin.com/${m[1].toLowerCase()}/${m[2]}` : undefined;
 }
+
+/**
+ * A LinkedIn company page URL from a bare *company* vanity ("stripe").
+ *
+ * Separate from absoluteLinkedIn, and deliberately not folded into it: that one
+ * rejects anything without a `company/` segment precisely so a person's profile
+ * cannot land in a company column, and a bare vanity is indistinguishable from
+ * a person's. This is for the callers that KNOW the value is a company vanity
+ * because their vendor's field says so — Tomba's `linkedin`, ContactOut's
+ * `li_vanity`, Wiza's `company_linkedin_slug`.
+ *
+ * Passes a value that is already a URL through absoluteLinkedIn instead, since
+ * two of those vendors are documented one way and observed the other.
+ */
+export function linkedInCompanyPage(raw: string | null | undefined): string | undefined {
+  const v = String(raw ?? "").trim().replace(/^\/+|\/+$/g, "");
+  if (!v) return undefined;
+  if (v.includes("/") || v.includes(".")) return absoluteLinkedIn(v);
+  // A vanity is the path segment LinkedIn allows: letters, digits, hyphens.
+  return /^[\w-]+$/.test(v) ? `https://www.linkedin.com/company/${v}` : undefined;
+}

@@ -9,8 +9,10 @@
 // and a re-lookup of the same person is free — so a phone lookup after an
 // email hit on the same profile costs the premium credit only.
 
-import type { CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement, LeadInput } from "./types";
-import { IDENTIFIED_PERSON, ineligible, miss, pollUntil, statusOutcome, vendorFetch } from "./vendor";
+import type {
+  CompanyProvider,
+  CompanyResult, CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement, LeadInput } from "./types";
+import { IDENTIFIED_PERSON, absoluteLinkedIn, ineligible, miss, pollUntil, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.rocketreach.co/api/v2";
 
@@ -134,3 +136,94 @@ function readPhone(p: Profile): EnrichResult {
   if (!value) return miss("No phone number on the profile");
   return { outcome: "hit", value, verified: true, creditsUsed: 1, detail: pick?.type ? `RocketReach type: ${pick.type}` : undefined };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://docs.rocketreach.co/reference/company-lookup-api
+// on 2026-09-03 — including the two nestings, read off the OpenAPI definition
+// rather than a prose example, because both are exactly the kind of detail a
+// plausible-looking guess gets wrong:
+//   GET /company/lookup/?domain=
+//        -> { name, domain, industry, num_employees, year_founded,
+//             ticker_symbol,
+//             links:   { linkedin },
+//             address: { city, region, postal_code, country } }
+//   404 -> no match.
+//   Auth: Api-Key: <key>   (same key and same header as the person adapter)
+//
+// `city`, `region`, `postal_code` and `country` are NOT top-level, and the
+// LinkedIn URL is NOT `linkedin_url`. Reading either flat would compile,
+// typecheck, and hand back a row of undefineds for every company.
+//
+// The endpoint was probed live on 2026-09-03 and answers a bad key with 401.
+
+interface CompanyBody {
+  name?: string | null;
+  industry?: string | null;
+  num_employees?: number | null;
+  year_founded?: number | null;
+  ticker_symbol?: string | null;
+  links?: { linkedin?: string | null } | null;
+  address?: {
+    city?: string | null;
+    region?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+  } | null;
+}
+
+export const RocketReachCompanyProvider: CompanyProvider = {
+  id: "rocketreach-company",
+  label: "RocketReach",
+  secretName: "ROCKETREACH_API_KEY",
+  signupUrl: "https://rocketreach.co/pricing",
+  covers: [
+    "name",
+    "linkedinUrl",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "postalCode",
+    "stockSymbol",
+    "employeeCount",
+    "foundedYear",
+  ],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await call(`/company/lookup/?domain=${encodeURIComponent(domain)}`, apiKey);
+
+    if (status === 404) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "RocketReach");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const c = (body ?? {}) as CompanyBody;
+    // A 200 carrying no name is not a match. Without this the adapter builds a
+    // record of undefineds, reports `hit`, and bills a credit for it — the
+    // runner would discard the empty record but the ledger would already be
+    // wrong. Every other adapter here guards the same way.
+    if (!c.name) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    const addr = c.address ?? {};
+    return {
+      outcome: "hit",
+      // RocketReach does not document a per-company price and returns no
+      // consumption field, so this records the one credit a lookup costs
+      // everywhere else in its API rather than claiming the call was free.
+      creditsUsed: 1,
+      data: {
+        name: c.name || undefined,
+        industry: c.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(c.links?.linkedin),
+        stockSymbol: c.ticker_symbol || undefined,
+        employeeCount: c.num_employees ?? undefined,
+        foundedYear: c.year_founded ?? undefined,
+        city: addr.city || undefined,
+        state: addr.region || undefined,
+        country: addr.country || undefined,
+        postalCode: addr.postal_code || undefined,
+      },
+    };
+  },
+};

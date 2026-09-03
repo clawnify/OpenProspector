@@ -212,6 +212,13 @@ export const PeopleDataLabsCompanyProvider: CompanyProvider = {
     }
 
     const d = (body ?? {}) as CompanyData;
+    // The flat-at-the-root shape has a sharp edge the nested vendors do not:
+    // there is no envelope key whose absence signals "no match", so an empty
+    // 200 parses into a record of undefineds that looks exactly like a hit —
+    // and gets billed as one. The name is what a match always carries.
+    if (!d.display_name && !d.name) {
+      return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    }
     const loc = d.location ?? {};
     return {
       outcome: "hit",
