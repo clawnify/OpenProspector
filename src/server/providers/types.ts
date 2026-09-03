@@ -244,6 +244,23 @@ export interface CompanyProvider {
   /** Shape of a compound secret, as on EnrichProvider (Tomba's `key:secret`). */
   readonly keyFormat?: string;
   /**
+   * Which CompanyRecord fields this vendor's schema can return *at all*,
+   * transcribed from its published response — not what it happens to fill for
+   * one company.
+   *
+   * Required rather than optional, because the runner uses it to decide whether
+   * calling this vendor can add anything the record is still missing. A vendor
+   * that overstates its coverage costs the user a credit for nothing; one that
+   * understates it is never called. Both are worse than the small cost of
+   * writing the list out, and an optional field would silently default a new
+   * adapter into one of the two.
+   *
+   * Firmographic coverage is genuinely uneven — Findymail returns six fields and
+   * no ticker, Surfe returns a ticker but no city — which is exactly why the
+   * runner cannot treat one vendor's answer as the whole record.
+   */
+  readonly covers: readonly (keyof CompanyRecord)[];
+  /**
    * Resolve one company from its bare domain. The runner normalizes the domain
    * before calling, so adapters receive `acme.com`, never `https://www.acme.com/`.
    */

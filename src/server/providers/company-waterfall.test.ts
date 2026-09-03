@@ -13,16 +13,31 @@ import {
 } from "./company";
 import type { CompanyProvider, CompanyRecord, CompanyResult } from "./types";
 
+/** Coverage claim of a full-coverage vendor, matching Apollo/Hunter/PDL. */
+const COVERS_ALL: readonly (keyof CompanyRecord)[] = [
+  "name",
+  "linkedinUrl",
+  "industry",
+  "city",
+  "state",
+  "country",
+  "postalCode",
+  "stockSymbol",
+  "employeeCount",
+  "foundedYear",
+];
+
 function stub(
   id: string,
   result: Partial<CompanyResult> & { outcome: CompanyResult["outcome"] },
-  opts: { throws?: boolean } = {},
+  opts: { throws?: boolean; covers?: readonly (keyof CompanyRecord)[] } = {},
 ): CompanyProvider & { calls: number } {
   const p = {
     id,
     label: id,
     secretName: `${id.toUpperCase()}_API_KEY`,
     signupUrl: "https://example.com",
+    covers: opts.covers ?? COVERS_ALL,
     calls: 0,
     async enrich(): Promise<CompanyResult> {
       p.calls++;
@@ -33,9 +48,27 @@ function stub(
   return p as CompanyProvider & { calls: number };
 }
 
-const RECORD: CompanyRecord = { industry: "Financial Services", city: "Amsterdam", country: "NL" };
-/** Every stub's key present, so tests exercise ordering rather than configuration. */
-const ENV = { A_API_KEY: "k", B_API_KEY: "k", C_API_KEY: "k" } as unknown as ConnectionsEnv;
+/**
+ * A record filling every essential field, so a hit on it ends the run. Written
+ * out rather than reused from a thinner fixture because "did the runner stop?"
+ * and "did the runner keep filling gaps?" are two different tests and sharing
+ * one record between them hides which behaviour is under test.
+ */
+const RECORD: CompanyRecord = {
+  linkedinUrl: "https://www.linkedin.com/company/acme",
+  industry: "Financial Services",
+  city: "Amsterdam",
+  country: "NL",
+};
+/**
+ * Every stub's key present, so tests exercise ordering rather than
+ * configuration. Keyed off each stub id's upper-cased name — a stub whose id is
+ * missing here is skipped as `unconfigured`, which silently turns an ordering
+ * test into a no-op, so new stub ids belong in this list.
+ */
+const ENV = Object.fromEntries(
+  ["a", "b", "c", "thin", "rest", "full", "dupe", "ticker", "extra"].map((id) => [`${id.toUpperCase()}_API_KEY`, "k"]),
+) as unknown as ConnectionsEnv;
 
 function memoryStore(): CompanyStore & { rows: Map<string, CompanyRecord>; reads: string[] } {
   const rows = new Map<string, CompanyRecord>();
@@ -74,7 +107,7 @@ describe("normalizeDomain", () => {
 });
 
 describe("runCompanyWaterfall", () => {
-  it("stops at the first hit and never calls the vendor behind it", async () => {
+  it("stops at a hit that fills every essential field, and never calls the vendor behind it", async () => {
     const a = stub("a", { outcome: "hit", data: RECORD, creditsUsed: 1 });
     const b = stub("b", { outcome: "hit", data: RECORD, creditsUsed: 1 });
     const res = await runCompanyWaterfall("acme.com", ENV, { order: ["a", "b"], registry: [a, b] });
@@ -167,6 +200,81 @@ describe("runCompanyWaterfall", () => {
     const res = await runCompanyWaterfall("acme.com", ENV, { order: ["ghost", "a"], registry: [a] });
     expect(res.providerId).toBe("a");
     expect(res.attempts).toHaveLength(1);
+  });
+
+  // ── Gap filling ───────────────────────────────────────────────────
+  //
+  // The behaviour the uneven-coverage registry needs: a thin vendor high in the
+  // order must not decide the record, because the row it produces is then
+  // trusted for six months and the export ships those columns blank.
+
+  it("keeps going past a thin hit and merges the rest of the record", async () => {
+    const thin = stub("thin", { outcome: "hit", data: { name: "Acme", industry: "Fintech" }, creditsUsed: 1 });
+    const rest = stub("rest", {
+      outcome: "hit",
+      data: { name: "Acme Inc", linkedinUrl: "https://www.linkedin.com/company/acme", city: "Amsterdam", country: "NL", postalCode: "1011" },
+      creditsUsed: 1,
+    });
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["thin", "rest"], registry: [thin, rest] });
+    expect(rest.calls).toBe(1);
+    expect(res.data).toEqual({
+      // Earlier in the order wins per field: "Acme" is kept, not overwritten
+      // by the later vendor's "Acme Inc".
+      name: "Acme",
+      industry: "Fintech",
+      linkedinUrl: "https://www.linkedin.com/company/acme",
+      city: "Amsterdam",
+      country: "NL",
+      postalCode: "1011",
+    });
+    expect(res.providerId).toBe("thin+rest");
+    expect(res.totalCredits).toBe(2);
+  });
+
+  it("does not spend on a vendor whose whole coverage is already filled", async () => {
+    const full = stub("full", { outcome: "hit", data: RECORD, creditsUsed: 1 });
+    // Covers only fields RECORD already carries, so it can add nothing.
+    const dupe = stub("dupe", { outcome: "hit", data: RECORD, creditsUsed: 1 }, { covers: ["industry", "city"] });
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["full", "dupe"], registry: [full, dupe] });
+    expect(dupe.calls).toBe(0);
+    expect(res.totalCredits).toBe(1);
+  });
+
+  it("skips a vendor that cannot supply any still-missing essential, and says so", async () => {
+    // `thin` leaves linkedinUrl, city and country open; `ticker` covers none of
+    // them, so calling it could only re-buy what we hold.
+    const thin = stub("thin", { outcome: "hit", data: { industry: "Fintech" }, creditsUsed: 1 }, { covers: ["industry"] });
+    const ticker = stub("ticker", { outcome: "hit", data: { stockSymbol: "ACME" }, creditsUsed: 1 }, { covers: ["stockSymbol"] });
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["thin", "ticker"], registry: [thin, ticker] });
+    expect(ticker.calls).toBe(0);
+    const skipped = res.attempts.find((a) => a.providerId === "ticker");
+    expect(skipped).toMatchObject({ outcome: "ineligible", creditsUsed: 0 });
+    expect(skipped?.detail).toContain("linkedinUrl");
+  });
+
+  it("never chases a ticker or a postal code down the order", async () => {
+    // Both are absent for most companies, so treating them as essential would
+    // spend a credit at every configured vendor on nearly every private one.
+    const full = stub("full", { outcome: "hit", data: RECORD, creditsUsed: 1 });
+    const extra = stub("extra", { outcome: "hit", data: { stockSymbol: "ACME", postalCode: "1011" }, creditsUsed: 1 });
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["full", "extra"], registry: [full, extra] });
+    expect(extra.calls).toBe(0);
+    expect(res.data?.stockSymbol).toBeUndefined();
+  });
+
+  it("stores the merged record, not the first vendor's fragment", async () => {
+    const store = memoryStore();
+    const thin = stub("thin", { outcome: "hit", data: { industry: "Fintech" }, creditsUsed: 1 });
+    const rest = stub("rest", { outcome: "hit", data: RECORD, creditsUsed: 1 });
+    await runCompanyWaterfall("acme.com", ENV, { order: ["thin", "rest"], registry: [thin, rest], store });
+    expect(store.rows.get("acme.com")).toEqual({ ...RECORD, industry: "Fintech" });
+  });
+
+  it("returns what it could assemble when the order runs out mid-record", async () => {
+    const thin = stub("thin", { outcome: "hit", data: { industry: "Fintech" }, creditsUsed: 1 });
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["thin"], registry: [thin] });
+    expect(res.data).toEqual({ industry: "Fintech" });
+    expect(res.providerId).toBe("thin");
   });
 });
 
