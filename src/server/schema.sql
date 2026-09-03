@@ -132,3 +132,43 @@ CREATE TABLE IF NOT EXISTS pending_enrichments (
 
 CREATE INDEX IF NOT EXISTS idx_pending_lead ON pending_enrichments(lead_id);
 CREATE INDEX IF NOT EXISTS idx_pending_run ON pending_enrichments(run_id);
+
+-- Firmographics for one company, keyed on its normalized domain.
+--
+-- Both the store and the cache: there is no separate companies-cache table
+-- because, unlike a person's email, a company record IS the thing we want to
+-- keep. The leads table stays the system of record for *people*; this holds
+-- what is true of the account rather than the contact, so enriching Stripe once
+-- serves every Stripe lead sourced afterwards.
+--
+-- Exists because the LinkedIn Matched Audiences company upload asks for
+-- industry, city, state, zip and the company page URL, and a people-sourcing
+-- app has none of them — it shipped those columns permanently blank.
+--
+-- Deliberately NOT expiring on CACHE_MAX_AGE_DAYS. Contact data decays in
+-- weeks because people change jobs; a company's HQ city, industry and ticker
+-- do not. Re-buying them quarterly would spend credits to rewrite identical
+-- rows. See COMPANY_CACHE_MAX_AGE_DAYS for the longer trade.
+CREATE TABLE IF NOT EXISTS companies (
+  -- Bare, lowercased, no leading `www.` — the same normalization the export's
+  -- GROUP BY uses, so the join cannot miss on a formatting difference.
+  domain TEXT PRIMARY KEY,
+  name TEXT DEFAULT '',
+  linkedin_url TEXT DEFAULT '',
+  industry TEXT DEFAULT '',
+  city TEXT DEFAULT '',
+  state TEXT DEFAULT '',
+  country TEXT DEFAULT '',
+  postal_code TEXT DEFAULT '',
+  -- Empty for the overwhelming majority: only listed companies have one, and a
+  -- fabricated ticker is worse in a LinkedIn upload than an absent one.
+  stock_symbol TEXT DEFAULT '',
+  employee_count INTEGER,
+  founded_year INTEGER,
+  -- Which vendor produced the row, mirroring `*_provider` on leads.
+  provider_id TEXT DEFAULT '',
+  found_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Supports the staleness check on re-enrichment.
+CREATE INDEX IF NOT EXISTS idx_companies_found_at ON companies(found_at);

@@ -177,3 +177,67 @@ export interface PendingWaterfall {
   /** Best unverified value seen so far, kept as the eventual fallback. */
   fallback: { value: string; providerId: string } | null;
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// A separate provider shape from EnrichProvider, deliberately.
+//
+// Person enrichment resolves ONE value per call, which is why EnrichProvider is
+// keyed on a field and returns a single `value`. A firmographic API resolves a
+// whole record in one call: industry, HQ address, ticker and headcount all
+// arrive together. Modelling company data as six EnrichFields would therefore
+// make the runner spend six credits to fetch what one call already returned —
+// the abstraction would cost real money.
+//
+// What IS shared: the vendor plumbing (vendorFetch, statusOutcome), the outcome
+// vocabulary below, the `secret()` key resolution, and the attempt ledger. A
+// vendor that serves both classes (People Data Labs, Apollo, Hunter) appears in
+// both registries under ONE secretName, so a user enters its key once.
+
+/** Firmographics for one company. Every field optional — vendors differ in coverage. */
+export interface CompanyRecord {
+  name?: string;
+  /** The company *page* URL, never a person's profile. */
+  linkedinUrl?: string;
+  industry?: string;
+  city?: string;
+  /** State, province or region, as the vendor reports it. */
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  /** Ticker, for listed companies only. Absent is the norm, not a gap. */
+  stockSymbol?: string;
+  employeeCount?: number;
+  foundedYear?: number;
+}
+
+/** One company provider's answer for one domain. Never `pending` — no firmographic API is callback-only. */
+export interface CompanyResult {
+  outcome: Exclude<AttemptOutcome, "pending">;
+  data: CompanyRecord | null;
+  creditsUsed: number;
+  detail?: string;
+}
+
+/**
+ * A firmographic vendor adapter. Same contract as EnrichProvider: a pure
+ * request/response wrapper that must never throw, with no caching, ordering or
+ * database coupling — the runner owns all of it.
+ */
+export interface CompanyProvider {
+  readonly id: string;
+  readonly label: string;
+  /**
+   * Reuses the person-side secret name where the vendor is the same company, so
+   * one key unlocks both classes and the settings screen lists the vendor once.
+   */
+  readonly secretName: string;
+  readonly signupUrl: string;
+  /** Shape of a compound secret, as on EnrichProvider (Tomba's `key:secret`). */
+  readonly keyFormat?: string;
+  /**
+   * Resolve one company from its bare domain. The runner normalizes the domain
+   * before calling, so adapters receive `acme.com`, never `https://www.acme.com/`.
+   */
+  enrich(domain: string, apiKey: string): Promise<CompanyResult>;
+}

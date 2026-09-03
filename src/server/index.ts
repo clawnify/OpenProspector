@@ -1101,32 +1101,52 @@ app.openapi(exportCsv, async (c) => {
 
   const where: string[] = [];
   const params: unknown[] = [];
+  // Columns are qualified because both queries alias `leads` as `l` — the
+  // company export joins `companies`, where a bare `domain` is ambiguous.
   if (q.run_id) {
-    where.push("run_id = ?");
+    where.push("l.run_id = ?");
     params.push(q.run_id);
   }
   // A LinkedIn contact list is matched on email alone, so a row without one is
   // not a weak match but no match — filter it in SQL rather than emitting the
   // row and dropping it after it has already consumed a page slot.
-  if (q.only_with_email === "true" || format === "linkedin-contacts") where.push("email != ''");
+  if (q.only_with_email === "true" || format === "linkedin-contacts") where.push("l.email != ''");
   const whereSQL = where.length ? " WHERE " + where.join(" AND ") : "";
 
   let rows: Record<string, unknown>[];
   if (format === "linkedin-companies") {
     // Grouped in SQL, not in JS, so the deduplication holds across pages. Doing
     // it after LIMIT would emit the same account once per page it appears on.
+    // LEFT JOIN, not JOIN: a company nobody has enriched yet must still export,
+    // with its firmographic columns blank, rather than vanish from the audience.
+    // The join key repeats the GROUP BY's normalization so a lead stored as
+    // `www.acme.com` still finds the `acme.com` row.
     rows = await query<Record<string, unknown>>(
-      `SELECT company, domain, MIN(location) AS location
-         FROM leads${whereSQL}
-        GROUP BY CASE WHEN domain != '' THEN lower(replace(domain, 'www.', '')) ELSE lower(company) END
-        HAVING company != '' OR domain != ''
-        ORDER BY company, domain
+      `SELECT l.company, l.domain, MIN(l.location) AS location,
+              c.name AS co_name, c.linkedin_url AS co_linkedin_url,
+              c.industry AS co_industry, c.city AS co_city, c.state AS co_state,
+              c.country AS co_country, c.postal_code AS co_postal_code,
+              c.stock_symbol AS co_stock_symbol
+         FROM leads l
+         LEFT JOIN companies c
+           ON c.domain = lower(replace(l.domain, 'www.', ''))${whereSQL}
+        GROUP BY CASE WHEN l.domain != '' THEN lower(replace(l.domain, 'www.', '')) ELSE lower(l.company) END
+        HAVING l.company != '' OR l.domain != ''
+        ORDER BY l.company, l.domain
         LIMIT ? OFFSET ?`,
       [...params, limit, offset],
     );
   } else {
+    // The company join is carried into the lead/contact export too, for one
+    // column: LinkedIn matches a contact on email, but uses `country` as a
+    // matching hint, and a lead whose sourced `location` was blank has none.
+    // The account's country is the right fallback — the person works there.
     rows = await query<Record<string, unknown>>(
-      `SELECT ${EXPORT_COLUMNS.join(", ")} FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`,
+      `SELECT ${EXPORT_COLUMNS.map((col) => `l.${col}`).join(", ")}, c.country AS co_country
+         FROM leads l
+         LEFT JOIN companies c
+           ON c.domain = lower(replace(l.domain, 'www.', ''))${whereSQL}
+        ORDER BY l.created_at DESC, l.id LIMIT ? OFFSET ?`,
       [...params, limit, offset],
     );
   }
