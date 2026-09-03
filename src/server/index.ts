@@ -5,7 +5,7 @@ import { get, query, run } from "./db.js";
 import { d1Cache, recordAttempts, runCredits } from "./cache.js";
 import { REGISTRY, defaultOrder, providerById, CACHE_MAX_AGE_DAYS } from "./providers/index.js";
 import { plannedForField } from "./providers/planned.js";
-import { companyDefaultOrder } from "./providers/company.js";
+import { COMPANY_CACHE_MAX_AGE_DAYS, COMPANY_REGISTRY, companyDefaultOrder } from "./providers/company.js";
 import {
   FIELDS,
   CALLBACK_TIMEOUT_MINUTES,
@@ -143,6 +143,11 @@ function isField(v: string): v is EnrichField {
   return (FIELDS as string[]).includes(v);
 }
 
+/** Fields that have a configurable waterfall — the two person fields, plus company. */
+function isLedgerField(v: string): v is LedgerField {
+  return isField(v) || v === "company";
+}
+
 /** Page/limit parsing shared by every list route, clamped so no caller can ask for the table. */
 function paging(q: { page?: string; limit?: string }) {
   const page = Math.max(1, parseInt(q.page || "1", 10) || 1);
@@ -242,7 +247,9 @@ app.openapi(listProviders, async (c) => {
       return {
         id: p.id,
         label: p.label,
-        fields: [...p.fields],
+        // Widened at the source: a vendor that also serves the company subject
+        // gets "company" appended below, and the array has to hold it.
+        fields: [...p.fields] as LedgerField[],
         secret_name: p.secretName,
         signup_url: p.signupUrl,
         configured,
@@ -253,6 +260,31 @@ app.openapi(listProviders, async (c) => {
       };
     }),
   );
+
+  // Company adapters. A vendor that serves both subjects (People Data Labs and
+  // Apollo resolve a person AND an organization from one key) is folded into
+  // its existing row rather than listed twice: to a user it is one account with
+  // one key, and two cards asking for the same secret is how a key gets pasted
+  // into one and not the other. A firmographic-only vendor gets its own row.
+  for (const cp of COMPANY_REGISTRY) {
+    const existing = providers.find((p) => p.secret_name === cp.secretName);
+    if (existing) {
+      existing.fields = [...existing.fields, "company"];
+      continue;
+    }
+    const key = (c.env as Record<string, unknown>)[cp.secretName];
+    providers.push({
+      id: cp.id,
+      label: cp.label,
+      fields: ["company"],
+      secret_name: cp.secretName,
+      signup_url: cp.signupUrl,
+      configured: typeof key === "string" && key.length > 0,
+      status: "available" as const,
+      ...(cp.keyFormat ? { key_format: cp.keyFormat } : {}),
+      ...(wantCredits ? { credits_remaining: null } : {}),
+    });
+  }
 
   // Roadmap vendors, declared but not implemented. Appended so the settings
   // screen shows the intended waterfall depth per field; they carry
@@ -286,12 +318,16 @@ app.openapi(listProviders, async (c) => {
   for (const f of FIELDS) {
     waterfalls[f] = [...(await waterfallOrder(f)), ...plannedForField(f).map((p) => p.id)];
   }
+  waterfalls.company = await waterfallOrder("company");
 
   return c.json(
     {
       providers: [...providers, ...planned],
       waterfalls,
       cache_max_age_days: CACHE_MAX_AGE_DAYS,
+      // Its own number, and shown as one: a user reading "90 days" next to a
+      // company row would be told something untrue about when it is re-bought.
+      company_cache_max_age_days: COMPANY_CACHE_MAX_AGE_DAYS,
       callback_timeout_minutes: CALLBACK_TIMEOUT_MINUTES,
     },
     200,
@@ -304,7 +340,7 @@ const putWaterfall = createRoute({
   tags: ["Providers"],
   summary: "Set the provider order for one field's waterfall",
   request: {
-    params: z.object({ field: z.string().openapi({ description: "email | phone" }) }),
+    params: z.object({ field: z.string().openapi({ description: "email | phone | company" }) }),
     body: {
       content: {
         "application/json": {
@@ -321,9 +357,12 @@ const putWaterfall = createRoute({
 
 app.openapi(putWaterfall, async (c) => {
   const field = c.req.valid("param").field;
-  if (!isField(field)) return c.json({ error: `Unknown field '${field}'` }, 400);
+  if (!isLedgerField(field)) return c.json({ error: `Unknown field '${field}'` }, 400);
 
-  const known = REGISTRY.filter((p) => p.fields.includes(field)).map((p) => p.id);
+  const known =
+    field === "company"
+      ? COMPANY_REGISTRY.map((p) => p.id)
+      : REGISTRY.filter((p) => p.fields.includes(field)).map((p) => p.id);
   const order = c.req.valid("json").order.filter((id) => known.includes(id));
   if (order.length === 0) return c.json({ error: "Order must contain at least one provider that can resolve this field" }, 400);
 
