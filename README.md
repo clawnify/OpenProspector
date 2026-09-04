@@ -233,6 +233,21 @@ pnpm build
 # cannot see: that the host, path, API version and auth header are right, rather
 # than only that the response mapping is.
 LIVE_PROVIDER_CHECK=1 pnpm test
+
+# The other half, and the one that costs money: calls every adapter you hold a
+# key for against the real vendor and checks what came back was actually
+# *mapped* — a hit that filled no field, or filled one the adapter never
+# declared, is the bug a fixture written from the same misreading cannot catch.
+# The company half needs no setup; the person half needs a lead to look up, and
+# skips without one.
+set -a; source .dev.vars; set +a          # the keys the probe should exercise
+LIVE_MAPPING_CHECK=1 pnpm vitest run src/server/providers/mapping.test.ts
+
+# Add a lead and the person adapters join in. Without it only the company half
+# runs, because no real person belongs hardcoded in a public repo that would
+# then look them up at fourteen contact-data vendors.
+LIVE_MAPPING_LEAD="Ada Lovelace,stripe.com" \
+LIVE_MAPPING_CHECK=1 pnpm vitest run src/server/providers/mapping.test.ts
 ```
 
 ## API
