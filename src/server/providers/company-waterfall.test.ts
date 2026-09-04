@@ -278,6 +278,32 @@ describe("runCompanyWaterfall", () => {
   });
 });
 
+describe("a company hit that carried nothing", () => {
+  // The runner already declined to merge an empty record — the comment there
+  // called it "a miss dressed as a hit". But the ledger row was written first
+  // and said `hit`, so a vendor billing us for a response whose field names we
+  // no longer match was indistinguishable from one that worked. Across a
+  // fourteen-vendor registry nobody holds every key for, this row is the only
+  // drift signal that reaches anyone.
+  it("records an all-empty record as unmapped, keeps the charge, and keeps going", async () => {
+    const a = stub("a", { outcome: "hit", data: {}, creditsUsed: 1 });
+    const b = stub("b", { outcome: "hit", data: RECORD, creditsUsed: 1 });
+
+    const res = await runCompanyWaterfall("acme.com", ENV, { order: ["a", "b"], registry: [a, b] });
+
+    const attempt = res.attempts.find((x) => x.providerId === "a");
+    expect(attempt?.outcome).toBe("unmapped");
+    expect(attempt?.creditsUsed).toBe(1); // the vendor charged; relabelling must not refund it
+    expect(attempt?.detail).toMatch(/response mapping/i);
+
+    // It contributed nothing, so it must not be credited in the attribution...
+    expect(res.providerId).toBe("b");
+    // ...and the run must continue rather than stop on a paid-for blank.
+    expect(b.calls).toBe(1);
+    expect(res.data).toEqual(RECORD);
+  });
+});
+
 describe("company waterfall defaults", () => {
   it("trusts a company record for longer than a contact's email", async () => {
     // Firmographics decay in years, contact data in weeks. If these ever match,

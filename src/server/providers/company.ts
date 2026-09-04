@@ -374,8 +374,16 @@ export async function runCompanyWaterfall(
 
     // A vendor can answer 200 with a record that is entirely empty. That is a
     // miss dressed as a hit, and merging it would credit a vendor that supplied
-    // nothing.
-    if (result.outcome === "hit" && hasAnyField(result.data)) {
+    // nothing. It is also not free — the row above recorded the credits — so it
+    // is relabelled rather than merely skipped, or the ledger shows a paid-for
+    // success that filled no cell.
+    if (result.outcome === "hit" && !hasAnyField(result.data)) {
+      attempts[attempts.length - 1] = {
+        ...attempts[attempts.length - 1],
+        outcome: "unmapped",
+        detail: `${provider.label} returned a company hit with every field empty — the adapter's response mapping is probably out of date`,
+      };
+    } else if (result.outcome === "hit" && hasAnyField(result.data)) {
       if (mergeInto(merged, result.data)) contributors.push(id);
     }
   }

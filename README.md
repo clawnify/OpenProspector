@@ -36,6 +36,8 @@ That claim is worth stating separately, because there are two levels of it and t
 - **Every** adapter is written against the vendor's published contract and covered by tests — a hit, a miss, a rejected key, and the eligibility gate that decides whether the vendor is called at all — and **every** endpoint is checked against the live vendor for host, path, API version and auth header (`LIVE_PROVIDER_CHECK`, below). Getting the mapping and the gate confused is what makes a waterfall either stop resolving or quietly keep spending.
 - Those tests answer with a *fixture*, though, and a fixture transcribed from the docs by the same reading that wrote the adapter agrees with the adapter by construction. Only a real key settles it. **Proven against a live response so far: Findymail, Prospeo and Wiza** (both subjects). The rest are contract-accurate and unproven — if you hold a key for one, `LIVE_MAPPING_CHECK` below turns it into a checked one in a single command, and a correction is a welcome PR.
 
+You are not relied on to run that, though. A vendor whose response we can no longer read does not fail quietly: when one answers, bills, and the adapter maps nothing out of it, the attempt is logged as **`unmapped`** with the charge intact, naming the vendor and saying the mapping is probably out of date. It is deliberately not a `miss` — a miss means the vendor has no record, which is normal and free; `unmapped` means it had one, you paid for it, and the bug is on our side of the wire. If you see one, please open an issue with the vendor and field: that row is how mapping drift gets found across a registry no single person holds every key for.
+
 ### Email waterfall
 
 | # | Provider | Cost on a hit | Vendor grades it? | Needs |

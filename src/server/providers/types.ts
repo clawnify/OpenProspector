@@ -51,6 +51,25 @@ export type AttemptOutcome =
   /** Transport/HTTP/parse failure. Waterfall continues to the next provider. */
   | "error"
   /**
+   * The vendor answered, and billed, and the adapter read nothing usable out of
+   * the response.
+   *
+   * Distinct from `miss` on purpose, and the distinction is the whole point: a
+   * miss means the vendor has no record, which is normal and costs nothing to
+   * be told. This means the vendor HAS one, charged for it, and our field names
+   * did not match theirs — a bug on our side of the wire, not a gap on theirs.
+   * Reported as a miss it reads as "no data available" and is ignored forever;
+   * reported as a hit (which it was, until this outcome existed) it is invisible
+   * even though the user paid for it.
+   *
+   * It is the runtime signature of response-mapping drift, which is otherwise
+   * only catchable by holding a key for all thirty-three adapters and running
+   * mapping.test.ts. Nobody holds all thirty-three. Every deployment of this
+   * app does hold *some*, so recording this is what makes the fleet of
+   * installs the drift detector instead of one developer's credit balance.
+   */
+  | "unmapped"
+  /**
    * Provider accepted the lookup but answers out of band, by POSTing to the
    * callback URL it was given. The waterfall pauses at this position and
    * resumes when the callback lands (or its timeout sweep fires); the ledger

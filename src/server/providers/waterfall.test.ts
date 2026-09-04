@@ -182,6 +182,42 @@ describe("runWaterfall", () => {
   });
 });
 
+describe("a hit that carried nothing", () => {
+  // The runner has always refused to *use* one of these. What it did not do was
+  // say so: the ledger row was written before the check and called it a hit, so
+  // a vendor that billed for a response our field names no longer match looked
+  // exactly like a vendor that worked. That is response-mapping drift, and the
+  // ledger is the only place a user could ever see it.
+  it("records an empty hit as unmapped, keeps the charge, and moves on", async () => {
+    const a = stub("a", { outcome: "hit", value: null, creditsUsed: 1 });
+    const b = stub("b", { outcome: "hit", value: "ada@acme.com", verified: true, creditsUsed: 1 });
+
+    const res = await runWaterfall("email", LEAD, envWith("a", "b"), {
+      order: ["a", "b"],
+      registry: [a, b],
+    });
+
+    const attempt = res.attempts.find((x) => x.providerId === "a");
+    expect(attempt?.outcome).toBe("unmapped");
+    // The credit is real and stays on the ledger — relabelling the outcome must
+    // not quietly refund a charge the vendor actually made.
+    expect(attempt?.creditsUsed).toBe(1);
+    expect(attempt?.detail).toMatch(/response mapping/i);
+
+    // And it is a dead end, not a stop: the search continues past it.
+    expect(b.calls).toBe(1);
+    expect(res.value).toBe("ada@acme.com");
+    expect(res.totalCredits).toBe(2);
+  });
+
+  it("does not relabel an honest miss", async () => {
+    const a = stub("a", { outcome: "miss" });
+    const res = await runWaterfall("email", LEAD, envWith("a"), { order: ["a"], registry: [a] });
+    // A miss means the vendor has no record — normal, free, and not a bug in us.
+    expect(res.attempts[0].outcome).toBe("miss");
+  });
+});
+
 describe("deferred vendors", () => {
   it("pauses at a deferred vendor, carrying the fallback and credits spent so far", async () => {
     const a = stub("a", { outcome: "hit", value: "guess@acme.com", verified: false, creditsUsed: 1 });

@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS enrichment_attempts (
   run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
   provider_id TEXT NOT NULL,
   field TEXT NOT NULL,
-  outcome TEXT NOT NULL, -- hit|miss|ineligible|unconfigured|no_credits|error
+  outcome TEXT NOT NULL, -- hit|miss|unmapped|ineligible|unconfigured|no_credits|error|pending
   credits_used INTEGER NOT NULL DEFAULT 0,
   ms INTEGER NOT NULL DEFAULT 0,
   detail TEXT DEFAULT '',
