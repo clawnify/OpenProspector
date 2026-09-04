@@ -21,12 +21,14 @@
 //     simply unreachable here, and is skipped without spending.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
 } from "./types";
-import { ineligible, linkedinSlug, miss, statusOutcome, vendorFetch } from "./vendor";
+import { absoluteLinkedIn, ineligible, linkedinSlug, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api-v2.forager.ai";
 
@@ -120,3 +122,91 @@ function readPhone(rows: unknown[]): EnrichResult {
   if (!value) return miss("No phone number held for this profile");
   return { outcome: "hit", value, verified: true, creditsUsed: 1 };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract read off Forager's own OpenAPI document
+// (https://docs.forager.ai/_bundle/openapi.yaml) on 2026-09-03 — the schema
+// itself, not a prose page, so the nestings below are the vendor's own:
+//   POST /api/{account_id}/datastorage/organization_search/  { domains: [d] }
+//        -> { search_results: [{ name, legal_name, website, domain,
+//                                founded_date, employees_amount,
+//                                employees_range,
+//                                linkedin_info: { public_profile_url,
+//                                                 industry: { name } },
+//                                addresses: [{ city, state, postcode,
+//                                              country }] }],
+//             total_search_results }
+//   Auth: X-API-KEY (the key half of the compound secret), account id in the path
+//
+// **It is a search endpoint, filtered to one domain — not a lookup.** The
+// results are therefore an array under `search_results` (not `results`), and
+// the first element is taken. `website_detail_lookup`, the endpoint that *is*
+// named like a company lookup, returns only traffic ranks and a tech stack and
+// fills no CompanyRecord field at all, so this is the right one despite the
+// name.
+//
+// Two nestings that a plausible guess gets wrong: the industry is
+// `linkedin_info.industry.name`, an object with a name and not a string, and
+// the LinkedIn page is `linkedin_info.public_profile_url` rather than anything
+// called `linkedin_url`. HQ lives in an `addresses` ARRAY, and the postal code
+// is spelled `postcode`.
+//
+// `founded_date` is a full date ("2010-09-01"), so the year is sliced out.
+// No ticker in the schema.
+
+interface OrganizationResult {
+  name?: string | null;
+  legal_name?: string | null;
+  founded_date?: string | null;
+  employees_amount?: number | null;
+  linkedin_info?: { public_profile_url?: string | null; industry?: { name?: string | null } | null } | null;
+  addresses?: { city?: string | null; state?: string | null; postcode?: string | null; country?: string | null }[] | null;
+}
+
+export const ForagerCompanyProvider: CompanyProvider = {
+  id: "forager-company",
+  label: "Forager",
+  secretName: "FORAGER_API_KEY",
+  signupUrl: "https://www.forager.ai/pricing",
+  keyFormat: "accountId:apiKey",
+  covers: ["name", "linkedinUrl", "industry", "city", "state", "country", "postalCode", "employeeCount", "foundedYear"],
+
+  async enrich(domain, secret): Promise<CompanyResult> {
+    const parsed = parseKey(secret);
+    if (!parsed) {
+      return { outcome: "unconfigured", data: null, creditsUsed: 0, detail: "FORAGER_API_KEY must be in the form accountId:apiKey" };
+    }
+
+    const { status, body } = await vendorFetch(
+      `${BASE}/api/${parsed.accountId}/datastorage/organization_search/`,
+      { method: "POST", headers: { "X-API-KEY": parsed.apiKey }, body: { domains: [domain] } },
+    );
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "Forager");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const org = (body as { search_results?: OrganizationResult[] } | null)?.search_results?.[0];
+    if (!org) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No organization matched this domain" };
+
+    const addr = org.addresses?.[0] ?? {};
+    const year = Number(String(org.founded_date ?? "").slice(0, 4));
+    return {
+      outcome: "hit",
+      creditsUsed: 1,
+      data: {
+        name: org.name || org.legal_name || undefined,
+        industry: org.linkedin_info?.industry?.name || undefined,
+        linkedinUrl: absoluteLinkedIn(org.linkedin_info?.public_profile_url),
+        employeeCount: org.employees_amount ?? undefined,
+        foundedYear: Number.isInteger(year) && year > 1600 && year < 2200 ? year : undefined,
+        city: addr.city || undefined,
+        state: addr.state || undefined,
+        country: addr.country || undefined,
+        postalCode: addr.postcode || undefined,
+      },
+    };
+  },
+};

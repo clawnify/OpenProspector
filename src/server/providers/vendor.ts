@@ -3,7 +3,7 @@
 // non-JSON error body, the HTTP-status → outcome mapping almost every vendor
 // follows, and the input requirement four of them share.
 
-import type { EnrichResult, InputRequirement } from "./types";
+import type { AttemptOutcome, EnrichResult, InputRequirement } from "./types";
 
 export interface VendorResponse {
   status: number;
@@ -50,7 +50,7 @@ export async function vendorFetch(
 export function statusOutcome(
   status: number,
   vendor: string,
-): { outcome: EnrichResult["outcome"]; detail: string } {
+): { outcome: Exclude<AttemptOutcome, "pending">; detail: string } {
   if (status === 401 || status === 403) return { outcome: "unconfigured", detail: `${vendor} rejected the API key` };
   if (status === 402) return { outcome: "no_credits", detail: `Out of ${vendor} credits` };
   if (status === 404) return { outcome: "miss", detail: "No record found" };
@@ -136,4 +136,52 @@ export async function pollUntil<T>(check: () => Promise<{ done: true; value: T }
     if (Date.now() + POLL.intervalMs > deadline) return null;
     await sleep(POLL.intervalMs);
   }
+}
+
+/**
+ * A LinkedIn *company page* URL, from the three shapes vendors hand back.
+ *
+ * Shared because each vendor stops at a different point along the same string:
+ *   full URL       "https://www.linkedin.com/company/stripe"  (Apollo)
+ *   no scheme      "linkedin.com/company/stripe"              (People Data Labs)
+ *   bare handle    "company/stripe"                           (Hunter)
+ *
+ * This matters more than it looks: the value goes into the
+ * `linkedincompanypageurl` column of a LinkedIn Matched Audiences upload, and
+ * the two shorter shapes are not URLs at all. Returns undefined for anything
+ * that is not a company page — a *personal* profile (`/in/…`) in that column
+ * would either be rejected or matched to the wrong entity.
+ */
+export function absoluteLinkedIn(raw: string | null | undefined): string | undefined {
+  const v = String(raw ?? "").trim();
+  if (!v) return undefined;
+  const path = v
+    .replace(/^https?:\/\//i, "")
+    .replace(/^[a-z]{2,3}\.linkedin\.com\//i, "")
+    .replace(/^www\.linkedin\.com\//i, "")
+    .replace(/^linkedin\.com\//i, "")
+    .replace(/^\/+/, "");
+  const m = /^(company|showcase|school)\/([^/?#]+)/i.exec(path);
+  return m ? `https://www.linkedin.com/${m[1].toLowerCase()}/${m[2]}` : undefined;
+}
+
+/**
+ * A LinkedIn company page URL from a bare *company* vanity ("stripe").
+ *
+ * Separate from absoluteLinkedIn, and deliberately not folded into it: that one
+ * rejects anything without a `company/` segment precisely so a person's profile
+ * cannot land in a company column, and a bare vanity is indistinguishable from
+ * a person's. This is for the callers that KNOW the value is a company vanity
+ * because their vendor's field says so — Tomba's `linkedin`, ContactOut's
+ * `li_vanity`, Wiza's `company_linkedin_slug`.
+ *
+ * Passes a value that is already a URL through absoluteLinkedIn instead, since
+ * two of those vendors are documented one way and observed the other.
+ */
+export function linkedInCompanyPage(raw: string | null | undefined): string | undefined {
+  const v = String(raw ?? "").trim().replace(/^\/+|\/+$/g, "");
+  if (!v) return undefined;
+  if (v.includes("/") || v.includes(".")) return absoluteLinkedIn(v);
+  // A vanity is the path segment LinkedIn allows: letters, digits, hyphens.
+  return /^[\w-]+$/.test(v) ? `https://www.linkedin.com/company/${v}` : undefined;
 }

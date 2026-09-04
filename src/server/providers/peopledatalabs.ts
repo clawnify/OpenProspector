@@ -14,13 +14,15 @@
 // single biggest difference between this adapter and a naive one.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
   LeadInput,
 } from "./types";
-import { IDENTIFIED_PERSON, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { IDENTIFIED_PERSON, absoluteLinkedIn, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.peopledatalabs.com/v5/person/enrich";
 
@@ -134,3 +136,106 @@ function readPhone(data: PersonData): EnrichResult {
     detail: "Not from People Data Labs' validated mobile source",
   };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://docs.peopledatalabs.com/docs/ on
+// 2026-09-03, and the endpoint probed live (401 on a bad key):
+//   GET /v5/company/enrich?website=&titlecase=true
+//        200 -> the company record FLAT AT THE ROOT (not under `data`, unlike
+//               the person endpoint above — getting this wrong yields a row of
+//               undefineds and a silently blank export)
+//        404 -> no match. PDL bills "per match", so this costs nothing.
+//   Auth: X-Api-Key: <key>   (same key as the person adapter)
+//
+// Two mapping traps, both confirmed from the Company Schema page:
+//   * `name` is the LOWERCASED name; `display_name` is the capitalised one.
+//   * `linkedin_url` carries NO scheme ("linkedin.com/company/peopledatalabs").
+//     Written into the LinkedIn upload as-is it is not a URL.
+
+const COMPANY_BASE = "https://api.peopledatalabs.com/v5/company/enrich";
+
+interface CompanyData {
+  display_name?: string | null;
+  name?: string | null;
+  industry?: string | null;
+  ticker?: string | null;
+  linkedin_url?: string | null;
+  employee_count?: number | null;
+  founded?: number | null;
+  location?: {
+    locality?: string | null;
+    region?: string | null;
+    country?: string | null;
+    postal_code?: string | null;
+  } | null;
+}
+
+export const PeopleDataLabsCompanyProvider: CompanyProvider = {
+  id: "peopledatalabs-company",
+  label: "People Data Labs",
+  secretName: "PEOPLEDATALABS_API_KEY",
+  signupUrl: "https://www.peopledatalabs.com/pricing",
+  // Every CompanyRecord field: the Company Schema carries all ten, with
+  // the postal code under `location`.
+  covers: [
+    "name",
+    "linkedinUrl",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "postalCode",
+    "stockSymbol",
+    "employeeCount",
+    "foundedYear",
+  ],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    // `titlecase` is PDL's own parameter for this: the schema stores every
+    // string lowercased ("san francisco", "california"), and asking the vendor
+    // to capitalise is better than shipping a title-caser that has to know
+    // about "N.V.", "GmbH" and "eBay".
+    //
+    // No `min_likelihood`: unlike the person lookup, which matches on a fuzzy
+    // name + company pair, this only ever queries by `website` — an exact key.
+    // A threshold here could only reject a correct match.
+    const { status, body } = await vendorFetch(
+      `${COMPANY_BASE}?website=${encodeURIComponent(domain)}&titlecase=true`,
+      { headers: { "X-Api-Key": apiKey } },
+    );
+
+    if (status === 404) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "People Data Labs");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const d = (body ?? {}) as CompanyData;
+    // The flat-at-the-root shape has a sharp edge the nested vendors do not:
+    // there is no envelope key whose absence signals "no match", so an empty
+    // 200 parses into a record of undefineds that looks exactly like a hit —
+    // and gets billed as one. The name is what a match always carries.
+    if (!d.display_name && !d.name) {
+      return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    }
+    const loc = d.location ?? {};
+    return {
+      outcome: "hit",
+      // A 200 is a match, and a match is what PDL bills for.
+      creditsUsed: 1,
+      data: {
+        name: d.display_name || d.name || undefined,
+        industry: d.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(d.linkedin_url),
+        stockSymbol: d.ticker || undefined,
+        employeeCount: d.employee_count ?? undefined,
+        foundedYear: d.founded ?? undefined,
+        city: loc.locality || undefined,
+        state: loc.region || undefined,
+        country: loc.country || undefined,
+        postalCode: loc.postal_code || undefined,
+      },
+    };
+  },
+};

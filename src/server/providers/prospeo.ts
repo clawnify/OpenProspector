@@ -26,6 +26,8 @@
 // response reports as `free_enrichment`, so the ledger records the true cost.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   CreditBalance,
   EnrichField,
   EnrichProvider,
@@ -33,7 +35,7 @@ import type {
   InputRequirement,
   LeadInput,
 } from "./types";
-import { IDENTIFIED_PERSON, ineligible, miss, vendorFetch } from "./vendor";
+import { IDENTIFIED_PERSON, absoluteLinkedIn, ineligible, miss, vendorFetch } from "./vendor";
 
 const BASE = "https://api.prospeo.io";
 
@@ -171,3 +173,106 @@ function readMobile(mobile: Revealable | undefined, free: boolean): EnrichResult
     detail: free ? "Free re-enrichment (already bought within 90 days)" : undefined,
   };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract captured from a LIVE response on 2026-09-03 (a real key, against
+// `stripe.com`):
+//   POST /enrich-company  { data: { company_website } }
+//        -> { error: false, free_enrichment,
+//             company: { name, industry, linkedin_url, employee_count,
+//                        employee_range, founded,
+//                        location: { country, country_code, state, city,
+//                                    raw_address } } }
+//   Auth: X-KEY: <key>   (same key as the person adapter)
+//
+// Trap 1 from the header applies unchanged: NO_MATCH and a rejected key are
+// both HTTP 400, told apart only by `error_code`, so errorCompanyResult maps
+// the code rather than the status. Sharing the person adapter's `errorResult`
+// was not possible — it returns an EnrichResult — so the codes are mapped once
+// more here, deliberately in the same order and with the same wording.
+//
+// No ticker and no postal code in the schema. The postal code IS present inside
+// `location.raw_address` ("354 Oyster Point Blvd, South San Francisco,
+// California 94080, US"), and is deliberately not scraped out of it: a regex
+// over a free-text address is a guess, and a wrong zipcode in the LinkedIn
+// upload is worse than an empty cell.
+//
+// Pricing, from the docs and confirmed by the live `free_enrichment` flag: one
+// credit per matched company, nothing for a no-match, and nothing for
+// re-enriching the same company inside 90 days.
+
+interface CompanyBody {
+  name?: string | null;
+  industry?: string | null;
+  linkedin_url?: string | null;
+  employee_count?: number | null;
+  founded?: number | null;
+  location?: {
+    country?: string | null;
+    state?: string | null;
+    city?: string | null;
+  } | null;
+}
+
+/** The person adapter's status mapping, in CompanyResult shape. */
+function errorCompanyResult(code: string | undefined, status: number): CompanyResult {
+  switch (code) {
+    case "NO_MATCH":
+      return { outcome: "miss", data: null, creditsUsed: 0, detail: "Prospeo matched no company with this domain" };
+    case "INVALID_DATAPOINTS":
+      return { outcome: "ineligible", data: null, creditsUsed: 0, detail: "Prospeo rejected the identifying datapoints" };
+    case "INSUFFICIENT_CREDITS":
+      return { outcome: "no_credits", data: null, creditsUsed: 0, detail: "Out of Prospeo credits" };
+    case "INVALID_API_KEY":
+      return { outcome: "unconfigured", data: null, creditsUsed: 0, detail: "Prospeo rejected the API key" };
+    default:
+      return {
+        outcome: "error",
+        data: null,
+        creditsUsed: 0,
+        detail: code ? `Prospeo error ${code}` : `Prospeo returned HTTP ${status}`,
+      };
+  }
+}
+
+export const ProspeoCompanyProvider: CompanyProvider = {
+  id: "prospeo-company",
+  label: "Prospeo",
+  secretName: "PROSPEO_API_KEY",
+  signupUrl: "https://prospeo.io/pricing",
+  // No stockSymbol and no postalCode — see the header on why the postal code in
+  // `raw_address` is not claimed.
+  covers: ["name", "linkedinUrl", "industry", "city", "state", "country", "employeeCount", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await vendorFetch(`${BASE}/enrich-company`, {
+      method: "POST",
+      headers: { "X-KEY": apiKey },
+      body: { data: { company_website: domain } },
+    });
+
+    const b = body as { error?: boolean; error_code?: string; free_enrichment?: boolean; company?: CompanyBody | null } | null;
+    if (status < 200 || status >= 300 || b?.error) return errorCompanyResult(b?.error_code, status);
+
+    const c = b?.company;
+    if (!c) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    const loc = c.location ?? {};
+    return {
+      outcome: "hit",
+      // The vendor's own word on whether this one was billed.
+      creditsUsed: b?.free_enrichment ? 0 : 1,
+      data: {
+        name: c.name || undefined,
+        industry: c.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(c.linkedin_url),
+        employeeCount: c.employee_count ?? undefined,
+        foundedYear: c.founded ?? undefined,
+        city: loc.city || undefined,
+        state: loc.state || undefined,
+        country: loc.country || undefined,
+      },
+    };
+  },
+};

@@ -209,3 +209,62 @@ describe("LinkedIn export formats", () => {
     expect(rows[0]).toMatchObject({ firstname: "Prince", lastname: "" });
   });
 });
+
+describe("LinkedIn export with company enrichment joined in", () => {
+  // Rows as the export query hands them over: lead columns, plus the `co_*`
+  // columns from the LEFT JOIN onto `companies`.
+  const ENRICHED = {
+    company: "Adyen",
+    domain: "adyen.com",
+    location: "Amsterdam, Netherlands",
+    co_name: "Adyen N.V.",
+    co_linkedin_url: "https://www.linkedin.com/company/adyen/",
+    co_industry: "Financial Services",
+    co_city: "Amsterdam",
+    co_state: "North Holland",
+    co_country: "NL",
+    co_postal_code: "1011 DJ",
+    co_stock_symbol: "ADYEN",
+  };
+
+  it("fills every column the unenriched export left blank", () => {
+    const rows = toLinkedInCompanies([ENRICHED]);
+    expect(rows[0]).toMatchObject({
+      companyname: "Adyen N.V.",
+      linkedincompanypageurl: "https://www.linkedin.com/company/adyen/",
+      stocksymbol: "ADYEN",
+      industry: "Financial Services",
+      zipcode: "1011 DJ",
+    });
+  });
+
+  it("prefers the vendor's structured location over one parsed from free text", () => {
+    // The lead's own location parses to country "Netherlands"; the vendor says
+    // "NL". The vendor wins, because LinkedIn matches on a country code.
+    const rows = toLinkedInCompanies([ENRICHED]);
+    expect(rows[0]).toMatchObject({ city: "Amsterdam", state: "North Holland", companycountry: "NL" });
+  });
+
+  it("falls back to the parsed location for a company no vendor resolved", () => {
+    const rows = toLinkedInCompanies([{ company: "Mollie", domain: "mollie.com", location: "Amsterdam, Netherlands" }]);
+    expect(rows[0]).toMatchObject({ city: "Amsterdam", companycountry: "Netherlands", industry: "", zipcode: "" });
+  });
+
+  it("never blanks a sourced company name when the vendor returns none", () => {
+    const rows = toLinkedInCompanies([{ company: "Mollie", domain: "mollie.com", co_name: "" }]);
+    expect(rows[0].companyname).toBe("Mollie");
+  });
+
+  it("gives a contact the company's country when the lead carried no location", () => {
+    const rows = toLinkedInContacts([
+      { full_name: "Alan Turing", email: "alan@stripe.com", location: "", co_country: "US" },
+    ]);
+    expect(rows[0].country).toBe("US");
+  });
+
+  it("still exports a contact with no country at all rather than dropping the row", () => {
+    const rows = toLinkedInContacts([{ full_name: "Ken Thompson", email: "ken@mollie.com" }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].country).toBe("");
+  });
+});

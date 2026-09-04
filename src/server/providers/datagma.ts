@@ -31,6 +31,8 @@
 // rather than assumed.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   CreditBalance,
   EnrichField,
   EnrichProvider,
@@ -38,7 +40,7 @@ import type {
   InputRequirement,
   LeadInput,
 } from "./types";
-import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { absoluteLinkedIn, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://gateway.datagma.net";
 
@@ -161,3 +163,101 @@ async function findPhone(input: LeadInput, apiKey: string): Promise<EnrichResult
     detail: mobile ? undefined : "Company switchboard number, not a direct mobile",
   };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against Datagma's API reference on 2026-09-03
+// (https://datagmaapi.readme.io/reference/ingressservice_fullapiv2), and the
+// endpoint probed live (`{"code":16,"message":"apiId is not valid"}` on a bad
+// key):
+//   GET /api/ingress/v2/full?apiId=&data=<domain>&companyPremium=true
+//        -> { company: {
+//               basic:   { name, website, yearFounded, industry, size,
+//                          locality, region, country, linkedUrl },
+//               premium: { name, url, founded, industries, companySize,
+//                          headquaterAddrLocality, headquaterAddrRegion,
+//                          headquaterAddrCountry, headquaterAddrPostalCode } },
+//             creditBurn }
+//   Auth: apiId query parameter (Datagma has no header form)
+//
+// **This is the same endpoint as the phone lookup, with a different flag set.**
+// `data` accepts a domain as readily as a person, and the person adapter above
+// already calls `/v2/full` — the difference is only that this one asks for the
+// company blocks and none of the person ones.
+//
+// `companyPremium` is on and `companyFull` is off, deliberately: premium is
+// what carries the HQ postal code, while full is documented as *financial*
+// data (funding, traffic, IPO) that fills no CompanyRecord field and is priced
+// accordingly. Turning on a paid block that maps to nothing is pure waste.
+//
+// `headquaterAddr*` is Datagma's own spelling, not a typo here — the same class
+// of trap as `cachAll` in the finder above.
+//
+// The two blocks are merged basic-first because basic carries `linkedUrl`,
+// which premium's `url` does not promise to be a LinkedIn page. No ticker in
+// either block. `size` / `companySize` are bucketed ranges, so employeeCount is
+// left unset rather than parsed out of one.
+
+interface CompanyBlocks {
+  basic?: {
+    name?: string | null;
+    yearFounded?: number | null;
+    industry?: string | null;
+    locality?: string | null;
+    region?: string | null;
+    country?: string | null;
+    linkedUrl?: string | null;
+  } | null;
+  premium?: {
+    name?: string | null;
+    founded?: number | null;
+    industries?: string | string[] | null;
+    headquaterAddrLocality?: string | null;
+    headquaterAddrRegion?: string | null;
+    headquaterAddrCountry?: string | null;
+    headquaterAddrPostalCode?: string | null;
+  } | null;
+}
+
+export const DatagmaCompanyProvider: CompanyProvider = {
+  id: "datagma-company",
+  label: "Datagma",
+  secretName: "DATAGMA_API_KEY",
+  signupUrl: "https://app.datagma.com/user-api",
+  covers: ["name", "linkedinUrl", "industry", "city", "state", "country", "postalCode", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const q = new URLSearchParams({ apiId: apiKey, data: domain, companyPremium: "true" });
+    const { status, body } = await vendorFetch(`${BASE}/api/ingress/v2/full?${q}`, {});
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "Datagma");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const b = body as { company?: CompanyBlocks | null; creditBurn?: number } | null;
+    const basic = b?.company?.basic ?? {};
+    const premium = b?.company?.premium ?? {};
+    const name = basic.name || premium.name || undefined;
+    // What the vendor says it charged, as on the phone lookup.
+    const creditsUsed = typeof b?.creditBurn === "number" ? b.creditBurn : 0;
+
+    if (!name) return { outcome: "miss", data: null, creditsUsed, detail: "No company matched this domain" };
+
+    const industries = premium.industries;
+    return {
+      outcome: "hit",
+      creditsUsed,
+      data: {
+        name,
+        industry: basic.industry || (Array.isArray(industries) ? industries[0] : industries) || undefined,
+        linkedinUrl: absoluteLinkedIn(basic.linkedUrl),
+        foundedYear: basic.yearFounded ?? premium.founded ?? undefined,
+        city: basic.locality || premium.headquaterAddrLocality || undefined,
+        state: basic.region || premium.headquaterAddrRegion || undefined,
+        country: basic.country || premium.headquaterAddrCountry || undefined,
+        postalCode: premium.headquaterAddrPostalCode || undefined,
+      },
+    };
+  },
+};

@@ -137,10 +137,18 @@ export interface EnrichProvider {
   credits?(apiKey: string): Promise<CreditBalance>;
 }
 
+/**
+ * What an attempt-log row can be about. Wider than EnrichField because the
+ * ledger spans both subjects this app buys: the two person fields, and the
+ * company record. One ledger, so "what did this run cost me?" has a single
+ * answer rather than one per subject.
+ */
+export type LedgerField = EnrichField | "company";
+
 /** One row of the attempt log — why a lead resolved the way it did, and what it cost. */
 export interface EnrichAttempt {
   providerId: string;
-  field: EnrichField;
+  field: LedgerField;
   outcome: AttemptOutcome;
   creditsUsed: number;
   detail?: string;
@@ -176,4 +184,85 @@ export interface PendingWaterfall {
   totalCredits: number;
   /** Best unverified value seen so far, kept as the eventual fallback. */
   fallback: { value: string; providerId: string } | null;
+}
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// A separate provider shape from EnrichProvider, deliberately.
+//
+// Person enrichment resolves ONE value per call, which is why EnrichProvider is
+// keyed on a field and returns a single `value`. A firmographic API resolves a
+// whole record in one call: industry, HQ address, ticker and headcount all
+// arrive together. Modelling company data as six EnrichFields would therefore
+// make the runner spend six credits to fetch what one call already returned —
+// the abstraction would cost real money.
+//
+// What IS shared: the vendor plumbing (vendorFetch, statusOutcome), the outcome
+// vocabulary below, the `secret()` key resolution, and the attempt ledger. A
+// vendor that serves both classes (People Data Labs, Apollo, Hunter) appears in
+// both registries under ONE secretName, so a user enters its key once.
+
+/** Firmographics for one company. Every field optional — vendors differ in coverage. */
+export interface CompanyRecord {
+  name?: string;
+  /** The company *page* URL, never a person's profile. */
+  linkedinUrl?: string;
+  industry?: string;
+  city?: string;
+  /** State, province or region, as the vendor reports it. */
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  /** Ticker, for listed companies only. Absent is the norm, not a gap. */
+  stockSymbol?: string;
+  employeeCount?: number;
+  foundedYear?: number;
+}
+
+/** One company provider's answer for one domain. Never `pending` — no firmographic API is callback-only. */
+export interface CompanyResult {
+  outcome: Exclude<AttemptOutcome, "pending">;
+  data: CompanyRecord | null;
+  creditsUsed: number;
+  detail?: string;
+}
+
+/**
+ * A firmographic vendor adapter. Same contract as EnrichProvider: a pure
+ * request/response wrapper that must never throw, with no caching, ordering or
+ * database coupling — the runner owns all of it.
+ */
+export interface CompanyProvider {
+  readonly id: string;
+  readonly label: string;
+  /**
+   * Reuses the person-side secret name where the vendor is the same company, so
+   * one key unlocks both classes and the settings screen lists the vendor once.
+   */
+  readonly secretName: string;
+  readonly signupUrl: string;
+  /** Shape of a compound secret, as on EnrichProvider (Tomba's `key:secret`). */
+  readonly keyFormat?: string;
+  /**
+   * Which CompanyRecord fields this vendor's schema can return *at all*,
+   * transcribed from its published response — not what it happens to fill for
+   * one company.
+   *
+   * Required rather than optional, because the runner uses it to decide whether
+   * calling this vendor can add anything the record is still missing. A vendor
+   * that overstates its coverage costs the user a credit for nothing; one that
+   * understates it is never called. Both are worse than the small cost of
+   * writing the list out, and an optional field would silently default a new
+   * adapter into one of the two.
+   *
+   * Firmographic coverage is genuinely uneven — Findymail returns six fields and
+   * no ticker, Surfe returns a ticker but no city — which is exactly why the
+   * runner cannot treat one vendor's answer as the whole record.
+   */
+  readonly covers: readonly (keyof CompanyRecord)[];
+  /**
+   * Resolve one company from its bare domain. The runner normalizes the domain
+   * before calling, so adapters receive `acme.com`, never `https://www.acme.com/`.
+   */
+  enrich(domain: string, apiKey: string): Promise<CompanyResult>;
 }

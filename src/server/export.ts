@@ -195,7 +195,9 @@ export function toLinkedInContacts(leads: Record<string, unknown>[]): Record<str
     .filter((l) => String(l.email || "").trim())
     .map((l) => {
       const { first, last } = splitName(String(l.full_name || ""));
-      const { country } = splitLocation(String(l.location || ""));
+      // The company's own country beats one parsed out of the lead's free-text
+      // location, and fills the cell entirely when the lead carried none.
+      const country = String(l.co_country || "").trim() || splitLocation(String(l.location || "")).country;
       return {
         email: String(l.email).trim().toLowerCase(),
         firstname: first,
@@ -217,12 +219,16 @@ export function toLinkedInContacts(leads: Record<string, unknown>[]): Record<str
  * company list with the same account fifty times over is how you burn the
  * upload's row budget on one account.
  *
- * `linkedincompanypageurl` is always empty, and that is deliberate: the only
- * LinkedIn URL a lead carries is the *person's* profile, and putting a personal
- * profile in a company-page column would either be rejected or match the wrong
- * entity. `stocksymbol`, `industry` and `zipcode` are empty for the same
- * reason — this app does not source them, and a fabricated value is worse than
- * an absent one.
+ * Rows arrive already LEFT JOINed to the `companies` table, so every `co_*`
+ * column is a firmographic value bought from a vendor and every bare column is
+ * what the sourcing agent wrote. The enriched value wins where both exist: a
+ * vendor's structured `city` beats a city parsed out of free text, and the
+ * fallback only matters for a company nobody has enriched yet.
+ *
+ * Columns still left empty on purpose when no vendor supplied them:
+ * a fabricated ticker or industry is worse in a LinkedIn upload than an absent
+ * one — LinkedIn matches the account on name, website and email domain, and a
+ * wrong value in a descriptive column can only mislead the person reading it.
  */
 export function toLinkedInCompanies(leads: Record<string, unknown>[]): Record<string, unknown>[] {
   const seen = new Set<string>();
@@ -237,18 +243,24 @@ export function toLinkedInCompanies(leads: Record<string, unknown>[]): Record<st
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const { city, state, country } = splitLocation(String(l.location || ""));
+    // Free-text location is the fallback only — see the field-by-field
+    // preference below.
+    const parsed = splitLocation(String(l.location || ""));
+    const co = (k: string) => String(l[`co_${k}`] || "").trim();
+
     out.push({
-      companyname: name,
+      // The vendor's legal/display name is better than whatever the sourcing
+      // agent typed, but never let it blank a name we already had.
+      companyname: co("name") || name,
       companywebsite: domain ? `https://${domain}` : "",
       companyemaildomain: domain,
-      linkedincompanypageurl: "",
-      stocksymbol: "",
-      industry: "",
-      city,
-      state,
-      companycountry: country,
-      zipcode: "",
+      linkedincompanypageurl: co("linkedin_url"),
+      stocksymbol: co("stock_symbol"),
+      industry: co("industry"),
+      city: co("city") || parsed.city,
+      state: co("state") || parsed.state,
+      companycountry: co("country") || parsed.country,
+      zipcode: co("postal_code"),
     });
   }
   return out;
