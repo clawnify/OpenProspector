@@ -29,11 +29,16 @@ The savings are not theoretical:
 
 Each field has its own independently-ordered waterfall. The order below is the shipping default; **you can reorder any of it in the UI**, and you should — the optimal order depends on which vendors you already pay for and how your ICP resolves.
 
-Every adapter is written against the vendor's own published contract, and its response mapping is covered by tests: a hit, a miss, a rejected key, and the eligibility gate that decides whether the vendor is called at all. Getting those confused is what makes a waterfall either stop resolving or quietly keep spending.
+The **Vendor grades it?** column is about the vendor's product, not about this repo: whether that vendor tells you its address is deliverable (✅ asserted, `graded` scored, ❌ neither). It is what the runner's "first verified result wins" rule reads. It is not a claim that anyone has checked our adapter.
+
+That claim is worth stating separately, because there are two levels of it and they are easy to conflate:
+
+- **Every** adapter is written against the vendor's published contract and covered by tests — a hit, a miss, a rejected key, and the eligibility gate that decides whether the vendor is called at all — and **every** endpoint is checked against the live vendor for host, path, API version and auth header (`LIVE_PROVIDER_CHECK`, below). Getting the mapping and the gate confused is what makes a waterfall either stop resolving or quietly keep spending.
+- Those tests answer with a *fixture*, though, and a fixture transcribed from the docs by the same reading that wrote the adapter agrees with the adapter by construction. Only a real key settles it. **Proven against a live response so far: Findymail, Prospeo and Wiza** (both subjects). The rest are contract-accurate and unproven — if you hold a key for one, `LIVE_MAPPING_CHECK` below turns it into a checked one in a single command, and a correction is a welcome PR.
 
 ### Email waterfall
 
-| # | Provider | Cost on a hit | Verified? | Needs |
+| # | Provider | Cost on a hit | Vendor grades it? | Needs |
 |---|----------|---------------|-----------|-------|
 | 1 | **Findymail** | 1 credit | ✅ | name + domain |
 | 2 | **LeadMagic** | 1 credit | ✅ | name + domain/company |
