@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Target, Upload } from "lucide-react";
+import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Upload } from "lucide-react";
 import { AppNav, reportLocation, type AppNavItem } from "@clawnify/app/client";
 import { api, ApiError, type Lead, type Provider, type Run } from "./api";
 import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
@@ -12,7 +12,9 @@ import { Settings } from "./routes/settings";
 // it as this app's own sidebar when opened directly, and hands it to the
 // Clawnify dashboard's sidebar when embedded there.
 const NAV: AppNavItem[] = [
-  { id: "leads", label: "Leads", href: "/", icon: "users" },
+  // The app opens on leads. This hidden item is what the app's name opens.
+  { id: "home", label: "Leads", href: "/", home: true },
+  { id: "leads", label: "Leads", href: "/", icon: "users", color: "blue" },
   { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
 ];
 
@@ -240,7 +242,7 @@ export function App() {
         </button>
         <AppNav
           title="OpenProspector"
-          icon={<span className="app-icon size-7"><Target size={16} strokeWidth={2.25} /></span>}
+          icon="target"
           groups={[{ items: NAV }]}
           active={active}
           onNavigate={(item) => routerNavigate(item.href ?? "/")}

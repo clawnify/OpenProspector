@@ -10,7 +10,8 @@
     "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql"
   },
   "dependencies": {
-    "@clawnify/app": "^0.2.0",
+    "@clawnify/app": "^0.2.1",
+    "@phosphor-icons/react": "^2.1.10",
     "@clawnify/connections": "^0.3.0",
     "@clawnify/db": "^0.4.1",
     "@clawnify/queue": "^0.1.0",
