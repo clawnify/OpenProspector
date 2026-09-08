@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@clawnify/app':
-        specifier: ^0.1.0
-        version: 0.1.1(@cloudflare/workers-types@5.20260728.1)(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)
+        specifier: ^0.2.0
+        version: 0.2.0(@cloudflare/workers-types@5.20260728.1)(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)(lucide-react@1.42.0(react@19.2.8))(react@19.2.8)
       '@clawnify/connections':
         specifier: ^0.3.0
         version: 0.3.0
@@ -27,8 +27,8 @@ importers:
         specifier: ^4.6.0
         version: 4.12.32
       lucide-react:
-        specifier: ^0.469.0
-        version: 0.469.0(react@19.2.8)
+        specifier: ^1.17.0
+        version: 1.42.0(react@19.2.8)
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -163,11 +163,18 @@ packages:
     resolution: {integrity: sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==}
     engines: {node: '>=6.9.0'}
 
-  '@clawnify/app@0.1.1':
-    resolution: {integrity: sha512-nPLTb/N2J5V8eui/I79W/ImX+5OYE6rit+7NuAPYp6q05MWV4ZFBDguvl0AfyndbsmPLvpdCMRCW2iJ54HcsaQ==}
+  '@clawnify/app@0.2.0':
+    resolution: {integrity: sha512-g3XjjBcG6//jWCIevt73TgbUQ8miCcjDHX/7x1vrv11mwPJFb80Ws34GAC4cTR+WH26DxFGs4giBw2YJBgKQow==}
     peerDependencies:
       '@hono/zod-openapi': '>=0.18 <1'
       hono: '*'
+      lucide-react: '>=0.400'
+      react: '>=18'
+    peerDependenciesMeta:
+      lucide-react:
+        optional: true
+      react:
+        optional: true
 
   '@clawnify/connections@0.3.0':
     resolution: {integrity: sha512-HYhqTirgLP9D7A89ODUetdhpiKIbJnozy4nrtTxWbTdrbejCF4ch3U8PVxnqF4SfijfBEn60axWTSGp8fMtZeQ==}
@@ -181,8 +188,8 @@ packages:
   '@clawnify/queue@0.1.0':
     resolution: {integrity: sha512-ActuyaeleK8HDe6iVfNO0xET67Ovkg3Ysix8embMFsBSnbCkfkdkYOi5Qq5fp7h6FU2DvBrEc/kFrjv/CoeeqA==}
 
-  '@clawnify/routes@0.2.1':
-    resolution: {integrity: sha512-syrH1Sk4uxXVI9Yo76yLrccAEpcwAUDxvxL3/K+QnLHFetPU/RaterpwXNbzonA2gtY7xBmYfJ66mgEw280HaQ==}
+  '@clawnify/routes@0.2.2':
+    resolution: {integrity: sha512-+s7gjRyH8bmIUHQDHmmwGyUeEcV5m+IoWEYr2tLiWdVW7WKlFlgeKIuJ61vW9mc9k4TizL+B+Tg8qJ72zAbvOA==}
     peerDependencies:
       '@hono/zod-openapi': '>=0.18 <1'
       hono: '*'
@@ -1523,8 +1530,8 @@ packages:
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
 
-  lucide-react@0.469.0:
-    resolution: {integrity: sha512-28vvUnnKQ/dBwiCQtwJw7QauYnE7yd2Cyp4tTTJpvglX4EMpbflcdBgrgToX2j71B3YvugK/NH3BGUk+E/p/Fw==}
+  lucide-react@1.42.0:
+    resolution: {integrity: sha512-b3jprplnoLS8n5etw1z8xODe3hF/yjKATrTitsrKrnjUhCef5BdDct6Ppv3zVvzFwmtfWgLO6XNM3C9fAD93ug==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -1982,12 +1989,15 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@clawnify/app@0.1.1(@cloudflare/workers-types@5.20260728.1)(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)':
+  '@clawnify/app@0.2.0(@cloudflare/workers-types@5.20260728.1)(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)(lucide-react@1.42.0(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@clawnify/db': 0.4.1(@cloudflare/workers-types@5.20260728.1)
-      '@clawnify/routes': 0.2.1(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)
+      '@clawnify/routes': 0.2.2(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)
       '@hono/zod-openapi': 0.19.10(hono@4.12.32)(zod@3.25.76)
       hono: 4.12.32
+    optionalDependencies:
+      lucide-react: 1.42.0(react@19.2.8)
+      react: 19.2.8
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cloudflare/workers-types'
@@ -2061,7 +2071,7 @@ snapshots:
 
   '@clawnify/queue@0.1.0': {}
 
-  '@clawnify/routes@0.2.1(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)':
+  '@clawnify/routes@0.2.2(@hono/zod-openapi@0.19.10(hono@4.12.32)(zod@3.25.76))(hono@4.12.32)':
     dependencies:
       '@hono/zod-openapi': 0.19.10(hono@4.12.32)(zod@3.25.76)
       hono: 4.12.32
@@ -2940,7 +2950,7 @@ snapshots:
     dependencies:
       yallist: 3.1.1
 
-  lucide-react@0.469.0(react@19.2.8):
+  lucide-react@1.42.0(react@19.2.8):
     dependencies:
       react: 19.2.8
 

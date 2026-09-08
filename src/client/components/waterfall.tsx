@@ -3,7 +3,7 @@
 // providers first, expensive fallbacks last — so it is directly editable here.
 
 import { ArrowDown, ArrowUp, Check, CircleAlert, Mail, Phone } from "lucide-react";
-import { Badge, Card, Chip, Empty, Eyebrow, Favicon, Zone } from "./ui";
+import { Badge, Button, Card, Chip, Empty, Favicon, Zone } from "./ui";
 import type { Provider } from "../api";
 
 const FIELD_META: Record<string, { label: string; icon: typeof Mail; note: string }> = {
@@ -42,93 +42,90 @@ export function WaterfallCard({
     onReorder(next);
   }
 
+  // No providers is a real empty state, so it is not framed in a card
+  // (DESIGN.md → Interaction).
+  if (order.length === 0) {
+    return (
+      <section>
+        <h2 className="card-title inline-flex items-center gap-2"><Icon size={16} className="text-muted-foreground" /> {meta.label}</h2>
+        <Empty title={`No providers can resolve ${field} yet`} hint="Add an adapter to the registry to enable this waterfall." />
+      </section>
+    );
+  }
+
   return (
     <Card>
-      <Zone>
+      <Zone className="py-3">
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-sunken">
-            <Icon size={14} className="text-muted" />
+          <span className="flex size-7 items-center justify-center rounded-sm bg-muted">
+            <Icon size={16} className="text-muted-foreground" />
           </span>
-          <h2 className="text-base font-semibold">{meta.label}</h2>
-          <span className="ml-auto text-[0.6875rem] text-faint data">
+          <h2 className="card-title">{meta.label}</h2>
+          <span className="ml-auto text-[0.8125rem] text-muted-foreground data">
             {order.length} {order.length === 1 ? "provider" : "providers"}
           </span>
         </div>
       </Zone>
 
-      {order.length === 0 ? (
-        <Empty title={`No providers can resolve ${field} yet`} hint="Add an adapter to the registry to enable this waterfall." />
-      ) : (
-        <div>
-          {order.map((id, i) => {
-            const p = byId.get(id);
-            if (!p) return null;
-            return (
-              <div
-                key={id}
-                className="flex items-center gap-3 border-b border-border px-4 py-2.5 last:border-b-0 hover:bg-sunken/60"
-              >
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border text-[0.6875rem] text-muted data">
-                  {i + 1}
+      <div>
+        {order.map((id, i) => {
+          const p = byId.get(id);
+          if (!p) return null;
+          return (
+            <div
+              key={id}
+              className="flex h-12 items-center gap-3 border-b border-border px-4 hover:bg-muted"
+            >
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[0.6875rem] text-muted-foreground data">
+                {i + 1}
+              </span>
+              <Favicon domain={p.signup_url} size={14} />
+              <span className="flex-1 truncate text-sm font-medium">{p.label}</span>
+              {p.deferred?.includes(field) ? (
+                // The one vendor kind that changes how a run feels: a lead
+                // that reaches it waits for the answer instead of moving on.
+                <span title="Answers by callback — a lead pauses here until the vendor replies">
+                  <Chip>Callback</Chip>
                 </span>
-                <Favicon domain={p.signup_url} size={14} />
-                <span className="flex-1 truncate text-sm font-medium">{p.label}</span>
-                {p.deferred?.includes(field) ? (
-                  // The one vendor kind that changes how a run feels: a lead
-                  // that reaches it waits for the answer instead of moving on.
-                  <span title="Answers by callback — a lead pauses here until the vendor replies">
-                    <Chip>Callback</Chip>
-                  </span>
-                ) : null}
+              ) : null}
 
-                {p.status === "planned" ? (
-                  // Shown in position so the intended depth of the waterfall is
-                  // visible, but badged: the runner resolves ids against the
-                  // registry, so this vendor is never actually called.
-                  <Badge tone="warning">Planned</Badge>
-                ) : p.configured ? (
-                  typeof p.credits_remaining === "number" ? (
-                    <Chip>
-                      <span className="data">{p.credits_remaining.toLocaleString()}</span> credits
-                    </Chip>
-                  ) : null
-                ) : (
-                  // Surfaced, not hidden: an unconfigured vendor is the most
-                  // common reason coverage looks worse than expected.
-                  <a href={p.signup_url} target="_blank" rel="noreferrer" title={`Set ${p.secret_name}`}>
-                    <Badge tone="warning">
-                      <CircleAlert size={11} /> No key
-                    </Badge>
-                  </a>
-                )}
+              {p.status === "planned" ? (
+                // Shown in position so the intended depth of the waterfall is
+                // visible, but badged: the runner resolves ids against the
+                // registry, so this vendor is never actually called.
+                <Badge tone="warning">Planned</Badge>
+              ) : p.configured ? (
+                typeof p.credits_remaining === "number" ? (
+                  <Chip>
+                    <span className="data">{p.credits_remaining.toLocaleString()}</span> credits
+                  </Chip>
+                ) : null
+              ) : (
+                // Surfaced, not hidden: an unconfigured vendor is the most
+                // common reason coverage looks worse than expected.
+                <a href={p.signup_url} target="_blank" rel="noreferrer" title={`Set ${p.secret_name}`}>
+                  <Badge tone="warning">
+                    <CircleAlert size={11} /> No key
+                  </Badge>
+                </a>
+              )}
 
-                <span className="flex shrink-0 gap-0.5">
-                  <button
-                    onClick={() => move(i, -1)}
-                    disabled={i === 0}
-                    aria-label={`Move ${p.label} up`}
-                    className="rounded-sm p-1 text-faint hover:bg-sunken hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-                  >
-                    <ArrowUp size={13} />
-                  </button>
-                  <button
-                    onClick={() => move(i, 1)}
-                    disabled={i === order.length - 1}
-                    aria-label={`Move ${p.label} down`}
-                    className="rounded-sm p-1 text-faint hover:bg-sunken hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
-                  >
-                    <ArrowDown size={13} />
-                  </button>
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              <span className="flex shrink-0 gap-0.5">
+                <Button variant="ghost" size="icon" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`Move ${p.label} up`}>
+                  <ArrowUp size={16} />
+                </Button>
+                <Button variant="ghost" size="icon" onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label={`Move ${p.label} down`}>
+                  <ArrowDown size={16} />
+                </Button>
+              </span>
+            </div>
+          );
+        })}
+      </div>
 
-      <Zone className="bg-sunken/50">
-        <Eyebrow>How this runs</Eyebrow>
-        <p className="mt-1.5 text-xs text-muted">{meta.note}</p>
+      <Zone className="bg-muted">
+        <p className="text-[0.8125rem] font-medium text-muted-foreground">How this runs</p>
+        <p className="mt-1 text-sm text-muted-foreground">{meta.note}</p>
         <span className="mt-2 inline-flex">
           <Badge tone="success">
             <Check size={11} strokeWidth={2.5} /> Verified before delivery

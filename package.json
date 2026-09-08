@@ -10,13 +10,13 @@
     "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql"
   },
   "dependencies": {
-    "@clawnify/app": "^0.1.0",
+    "@clawnify/app": "^0.2.0",
     "@clawnify/connections": "^0.3.0",
     "@clawnify/db": "^0.4.1",
     "@clawnify/queue": "^0.1.0",
     "@tailwindcss/vite": "^4.2.2",
     "hono": "^4.6.0",
-    "lucide-react": "^0.469.0",
+    "lucide-react": "^1.17.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.18.1",

@@ -2,8 +2,8 @@
 // "where did this email come from?" is answerable without opening anything.
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Clock, Download, Loader2, RefreshCw, Search } from "lucide-react";
-import { Badge, Button, Card, Chip, Empty, Eyebrow, Favicon, Zone } from "./ui";
+import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RefreshCw, Search, User } from "lucide-react";
+import { Badge, Button, Chip, Empty, Favicon } from "./ui";
 import type { Lead, Provider } from "../api";
 
 function StatusBadge({ lead }: { lead: Lead }) {
@@ -93,14 +93,14 @@ function ExportMenu() {
 
   return (
     <div className="relative" ref={ref}>
-      <Button onClick={() => setOpen((v) => !v)}>
-        <Download size={13} /> Export CSV
-        <ChevronDown size={13} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+      <Button onClick={() => setOpen((v) => !v)} aria-label="Export CSV">
+        <Download size={16} /> Export CSV
+        <ChevronDown size={16} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
       </Button>
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 z-20 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface shadow-lg"
+          className="absolute right-0 z-20 mt-1 w-72 overflow-hidden rounded-md bg-card p-1 shadow-float"
         >
           {EXPORT_FORMATS.map((f) => (
             <a
@@ -109,10 +109,10 @@ function ExportMenu() {
               href={href(f.format)}
               download
               onClick={() => setOpen(false)}
-              className="block border-b border-border px-3 py-2 last:border-b-0 hover:bg-sunken"
+              className="block rounded-sm px-3 py-2 hover:bg-muted"
             >
               <span className="block text-sm text-foreground">{f.label}</span>
-              <span className="block text-xs text-faint">{f.hint}</span>
+              <span className="block text-xs text-muted-foreground">{f.hint}</span>
             </a>
           ))}
         </div>
@@ -120,6 +120,8 @@ function ExportMenu() {
     </div>
   );
 }
+
+const TH = "h-10 px-4 text-left text-[0.8125rem] font-medium text-muted-foreground";
 
 export function LeadsTable({
   leads,
@@ -149,23 +151,24 @@ export function LeadsTable({
   const pages = Math.max(1, Math.ceil(total / limit));
   const found = leads.filter((l) => l.email).length;
 
+  // The primary table runs directly on the white pane, edge to edge, with the
+  // filter bar above it (DESIGN.md → Table pages). No card, no outer frame.
   return (
-    <Card>
-      <Zone>
-        <Eyebrow right={`${total.toLocaleString()} total`}>Leads</Eyebrow>
-        <div className="mt-2 flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
-            <input
-              value={search}
-              onChange={(e) => onSearch(e.target.value)}
-              placeholder="Search name, company, domain, title…"
-              className="w-full rounded-md border border-border bg-surface py-1.5 pl-8 pr-3 text-sm placeholder:text-faint"
-            />
-          </div>
-          <ExportMenu />
+    <section className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
+        <div className="relative w-80">
+          <Search size={16} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search name, company, domain, title…"
+            className="input pl-8 text-sm"
+          />
         </div>
-      </Zone>
+        <span className="text-[0.8125rem] text-muted-foreground data">{total.toLocaleString()} leads</span>
+        <span className="flex-1" />
+        <ExportMenu />
+      </div>
 
       {leads.length === 0 ? (
         <Empty title="No leads yet" hint="Describe an ideal customer above, or import a CSV to enrich a list you already have." />
@@ -173,29 +176,29 @@ export function LeadsTable({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border bg-sunken/60 text-left">
-                <th className="px-4 py-2 font-medium text-muted">Name</th>
-                <th className="px-4 py-2 font-medium text-muted">Company</th>
-                <th className="px-4 py-2 font-medium text-muted">Email</th>
-                <th className="px-4 py-2 font-medium text-muted">Status</th>
-                <th className="w-10 px-4 py-2" />
+              <tr className="border-b border-border">
+                <th className={`${TH} pl-6`}><span className="inline-flex items-center gap-1.5"><User size={14} /> Name</span></th>
+                <th className={TH}><span className="inline-flex items-center gap-1.5"><Building2 size={14} /> Company</span></th>
+                <th className={TH}><span className="inline-flex items-center gap-1.5"><Mail size={14} /> Email</span></th>
+                <th className={TH}><span className="inline-flex items-center gap-1.5"><Activity size={14} /> Status</span></th>
+                <th className={`${TH} w-14 pr-6`} />
               </tr>
             </thead>
             <tbody>
               {leads.map((l) => (
-                <tr key={l.id} className="border-b border-border last:border-b-0 hover:bg-sunken/40">
-                  <td className="px-4 py-2.5">
+                <tr key={l.id} className="h-11 border-b border-border hover:bg-muted">
+                  <td className="px-4 py-2 pl-6">
                     <div className="font-medium">{l.full_name || <span className="text-faint">—</span>}</div>
-                    {l.title ? <div className="text-xs text-faint">{l.title}</div> : null}
+                    {l.title ? <div className="text-xs text-muted-foreground">{l.title}</div> : null}
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-4 py-2">
                     <div>{l.company || <span className="text-faint">—</span>}</div>
-                    {l.domain ? <div className="text-xs text-faint">{l.domain}</div> : null}
+                    {l.domain ? <div className="text-xs text-muted-foreground">{l.domain}</div> : null}
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-4 py-2">
                     {l.email ? (
                       <div className="flex flex-col items-start gap-1">
-                        <a href={`mailto:${l.email}`} className="text-link hover:underline">
+                        <a href={`mailto:${l.email}`} className="text-info hover:underline">
                           {l.email}
                         </a>
                         {/* Attribution on the cell itself — the waterfall is
@@ -211,49 +214,47 @@ export function LeadsTable({
                       <span className="text-faint">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-4 py-2">
                     <StatusBadge lead={l} />
                   </td>
-                  <td className="px-4 py-2.5">
-                    <button
+                  <td className="px-4 py-2 pr-6 text-right">
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       onClick={() => onEnrich(l.id, Boolean(l.email))}
                       disabled={busyId === l.id}
                       title={l.email ? "Re-buy from vendors (costs credits)" : "Enrich (uses cache when possible)"}
-                      className="rounded-sm p-1 text-faint hover:bg-sunken hover:text-foreground disabled:opacity-40"
+                      aria-label={l.email ? "Re-enrich" : "Enrich"}
                     >
-                      <RefreshCw size={13} className={busyId === l.id ? "animate-spin" : ""} />
-                    </button>
+                      <RefreshCw size={16} className={busyId === l.id ? "animate-spin" : ""} />
+                    </Button>
                   </td>
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr className="border-t border-border bg-sunken/60">
-                <td colSpan={5} className="px-4 py-2 text-xs text-muted">
-                  <span className="data">{found}</span> of <span className="data">{leads.length}</span> on this page have an
-                  email
-                </td>
-              </tr>
-            </tfoot>
           </table>
+          <div className="flex h-10 items-center justify-between px-6 text-xs text-muted-foreground">
+            <span>
+              <span className="data">{found}</span> of <span className="data">{leads.length}</span> on this page have an email
+            </span>
+            {pages > 1 ? (
+              <span className="flex items-center gap-3">
+                <span>
+                  Page <span className="data">{page}</span> of <span className="data">{pages}</span>
+                </span>
+                <span className="flex gap-1.5">
+                  <Button onClick={() => onPage(page - 1)} disabled={page <= 1}>
+                    Previous
+                  </Button>
+                  <Button onClick={() => onPage(page + 1)} disabled={page >= pages}>
+                    Next
+                  </Button>
+                </span>
+              </span>
+            ) : null}
+          </div>
         </div>
       )}
-
-      {pages > 1 ? (
-        <Zone className="flex items-center justify-between">
-          <span className="text-xs text-muted">
-            Page <span className="data">{page}</span> of <span className="data">{pages}</span>
-          </span>
-          <span className="flex gap-1.5">
-            <Button onClick={() => onPage(page - 1)} disabled={page <= 1}>
-              Previous
-            </Button>
-            <Button onClick={() => onPage(page + 1)} disabled={page >= pages}>
-              Next
-            </Button>
-          </span>
-        </Zone>
-      ) : null}
-    </Card>
+    </section>
   );
 }
