@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, Route, Routes } from "react-router-dom";
-import { ArrowUp, Check, Copy, RefreshCw, Settings as SettingsIcon, Upload } from "lucide-react";
+import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Target, Upload } from "lucide-react";
+import { AppNav, reportLocation, type AppNavItem } from "@clawnify/app/client";
 import { api, ApiError, type Lead, type Provider, type Run } from "./api";
-import { Badge, Button, Card, Eyebrow, Zone } from "./components/ui";
+import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
 import { RunsPanel } from "./components/runs-panel";
 import { Settings } from "./routes/settings";
+
+// One definition of the navigation (DESIGN.md → The shell). <AppNav> paints
+// it as this app's own sidebar when opened directly, and hands it to the
+// Clawnify dashboard's sidebar when embedded there.
+const NAV: AppNavItem[] = [
+  { id: "leads", label: "Leads", href: "/", icon: "users" },
+  { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
+];
 
 /** Parse a pasted CSV into lead rows. Header names are matched loosely so a
  *  file exported from any CRM lands without the user renaming columns. */
@@ -203,32 +212,60 @@ export function App() {
   const configured = providers.filter((p) => p.configured).length;
   const unconfigured = providers.length - configured;
 
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const active = location.pathname.startsWith("/settings") ? "settings" : "leads";
+
+  // Lets the dashboard restore this exact screen on reload.
+  useEffect(() => {
+    reportLocation(location.pathname + location.search);
+  }, [location.pathname, location.search]);
+
+  // Collapse folds the SDK sidebar to icons. The toggle lives here, not in
+  // <AppNav>, because 0.2.0 has no slot for it; the proper home is the SDK.
+  const [navCollapsed, setNavCollapsed] = useState(false);
+
   return (
-    <div className="mx-auto max-w-5xl px-5 py-8">
-      <Routes>
-        <Route
-          path="/settings"
-          element={
-            <Settings
-              providers={providers}
-              waterfalls={waterfalls}
-              cacheDays={cacheDays}
-              onReorder={(f, o) => void reorder(f, o)}
-            />
-          }
+    <div className="flex h-full" data-nav-collapsed={navCollapsed || undefined}>
+      {/* flex, so the SDK aside stretches to the row height like it did as a direct child */}
+      <div className="relative flex shrink-0">
+        <button
+          type="button"
+          onClick={() => setNavCollapsed((v) => !v)}
+          aria-label={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="absolute right-2 top-3.5 z-10 inline-flex size-7 items-center justify-center rounded-sm text-muted-foreground hover:bg-black/[0.04] hover:text-foreground"
+        >
+          <PanelLeft size={16} />
+        </button>
+        <AppNav
+          title="OpenProspector"
+          icon={<span className="app-icon size-7"><Target size={16} strokeWidth={2.25} /></span>}
+          groups={[{ items: NAV }]}
+          active={active}
+          onNavigate={(item) => routerNavigate(item.href ?? "/")}
         />
-        <Route
-          path="*"
-          element={
-            <>
-              <header className="mb-7 flex items-end justify-between gap-4">
-                <div>
-                  <h1 className="text-xl font-bold tracking-tight">OpenProspector</h1>
-                  <p className="mt-0.5 text-sm text-muted">
-                    Find and enrich leads with your own provider keys — at cost, with no per-lead markup.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
+      </div>
+
+      <main className="min-w-0 flex-1 overflow-auto">
+        <Routes>
+          <Route
+            path="/settings"
+            element={
+              <Settings
+                providers={providers}
+                waterfalls={waterfalls}
+                cacheDays={cacheDays}
+                onReorder={(f, o) => void reorder(f, o)}
+              />
+            }
+          />
+          <Route
+            path="*"
+            element={
+              <div className="flex min-h-full flex-col">
+                <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
+                  <h1 className="text-[1.375rem] font-semibold tracking-[-0.01em]">Leads</h1>
                   {/* Only surfaced when something needs attention — a fully
                       configured setup shouldn't nag on every page load. */}
                   {unconfigured > 0 ? (
@@ -238,125 +275,122 @@ export function App() {
                       </Badge>
                     </Link>
                   ) : null}
-                  <Link to="/settings">
-                    <Button>
-                      <SettingsIcon size={13} /> Settings
-                    </Button>
-                  </Link>
-                </div>
-              </header>
+                </header>
 
-              {notice ? (
-                <div
-                  className={`mb-5 rounded-md border px-3 py-2 text-sm ${
-                    notice.tone === "success"
-                      ? "border-success/25 bg-success-tint text-success"
-                      : "border-danger/25 bg-danger-tint text-danger"
-                  }`}
-                  role="status"
-                >
-                  {notice.text}
-                </div>
-              ) : null}
-
-              <Card className="mb-6">
-                <Zone>
-                  <Eyebrow>Ideal customer profile</Eyebrow>
-                  <textarea
-                    value={icp}
-                    onChange={(e) => setIcp(e.target.value)}
-                    rows={2}
-                    placeholder="Find personal financial advisory firms that just hired a compliance officer…"
-                    className="mt-2 w-full resize-none rounded-md border border-border bg-surface px-3 py-2 text-sm placeholder:text-faint"
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted hover:text-foreground">
-                      <Upload size={13} />
-                      Import CSV
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) void onCsv(f);
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
-                    {/* The single coral action on this screen. */}
-                    <Button
-                      variant="primary"
-                      onClick={startRun}
-                      disabled={icp.trim().length < 3 || dispatching}
+                <div className="px-6 py-6">
+                  {notice ? (
+                    <div
+                      className={`mb-5 rounded-sm px-3 py-2 text-sm ${
+                        notice.tone === "success"
+                          ? "bg-success-tint text-success"
+                          : "bg-destructive-tint text-destructive"
+                      }`}
+                      role="status"
                     >
-                      {dispatching ? "Starting…" : "Start search"} <ArrowUp size={13} />
-                    </Button>
-                  </div>
-                </Zone>
-              </Card>
-
-              {/* Shown only when the app could not reach the agent itself. The
-                  search is already saved, so this is a fallback route to the
-                  same outcome — not a lost run. */}
-              {handoff ? (
-                <Card className="mb-6">
-                  <Zone>
-                    <Eyebrow right="the search is saved either way">Hand this to your agent</Eyebrow>
-                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-sunken px-3 py-2 text-xs leading-relaxed text-muted">
-                      {handoff.brief}
-                    </pre>
-                    <div className="mt-2 flex items-center gap-2">
-                      <Button
-                        onClick={() => {
-                          void navigator.clipboard.writeText(handoff.brief).then(() => {
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 2000);
-                          });
-                        }}
-                      >
-                        {copied ? <Check size={13} strokeWidth={2.5} /> : <Copy size={13} />}
-                        {copied ? "Copied" : "Copy brief"}
-                      </Button>
-                      <Button onClick={() => void dispatch(handoff.runId)} disabled={dispatching}>
-                        <RefreshCw size={13} /> {dispatching ? "Retrying…" : "Retry"}
-                      </Button>
-                      <Button variant="ghost" onClick={() => setHandoff(null)}>
-                        Dismiss
-                      </Button>
+                      {notice.text}
                     </div>
-                  </Zone>
-                </Card>
-              ) : null}
+                  ) : null}
 
-              <RunsPanel
-                runs={runs}
-                activeRunId={runFilter}
-                onFilterRun={(id) => {
-                  setRunFilter(id);
-                  setPage(1);
-                }}
-              />
+                  <Card className="mb-6">
+                    <Zone>
+                      <CardTitle>Ideal customer profile</CardTitle>
+                      <textarea
+                        value={icp}
+                        onChange={(e) => setIcp(e.target.value)}
+                        rows={2}
+                        placeholder="Find personal financial advisory firms that just hired a compliance officer…"
+                        className="input mt-3 h-auto resize-none py-2 text-sm"
+                      />
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <label className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm px-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
+                          <Upload size={16} />
+                          Import CSV
+                          <input
+                            type="file"
+                            accept=".csv,text/csv"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) void onCsv(f);
+                              e.target.value = "";
+                            }}
+                          />
+                        </label>
+                        {/* The single ink action on this screen. */}
+                        <Button
+                          variant="primary"
+                          onClick={startRun}
+                          disabled={icp.trim().length < 3 || dispatching}
+                        >
+                          {dispatching ? "Starting…" : "Start search"} <ArrowUp size={16} />
+                        </Button>
+                      </div>
+                    </Zone>
+                  </Card>
 
-              <LeadsTable
-                leads={leads}
-                providers={providers}
-                total={total}
-                page={page}
-                limit={limit}
-                search={search}
-                busyId={busyId}
-                onSearch={(v) => {
-                  setSearch(v);
-                  setPage(1);
-                }}
-                onPage={setPage}
-                onEnrich={(id, refresh) => void enrich(id, refresh)}
-              />
-            </>
-          }
-        />
-      </Routes>
+                  {/* Shown only when the app could not reach the agent itself. The
+                      search is already saved, so this is a fallback route to the
+                      same outcome — not a lost run. */}
+                  {handoff ? (
+                    <Card className="mb-6">
+                      <Zone>
+                        <CardTitle right="the search is saved either way">Hand this to your agent</CardTitle>
+                        <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-sm bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                          {handoff.brief}
+                        </pre>
+                        <div className="mt-3 flex items-center gap-2">
+                          <Button
+                            onClick={() => {
+                              void navigator.clipboard.writeText(handoff.brief).then(() => {
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                              });
+                            }}
+                          >
+                            {copied ? <Check size={16} strokeWidth={2.5} /> : <Copy size={16} />}
+                            {copied ? "Copied" : "Copy brief"}
+                          </Button>
+                          <Button onClick={() => void dispatch(handoff.runId)} disabled={dispatching}>
+                            <RefreshCw size={16} /> {dispatching ? "Retrying…" : "Retry"}
+                          </Button>
+                          <Button variant="ghost" onClick={() => setHandoff(null)}>
+                            Dismiss
+                          </Button>
+                        </div>
+                      </Zone>
+                    </Card>
+                  ) : null}
+
+                  <RunsPanel
+                    runs={runs}
+                    activeRunId={runFilter}
+                    onFilterRun={(id) => {
+                      setRunFilter(id);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+
+                <LeadsTable
+                  leads={leads}
+                  providers={providers}
+                  total={total}
+                  page={page}
+                  limit={limit}
+                  search={search}
+                  busyId={busyId}
+                  onSearch={(v) => {
+                    setSearch(v);
+                    setPage(1);
+                  }}
+                  onPage={setPage}
+                  onEnrich={(id, refresh) => void enrich(id, refresh)}
+                />
+              </div>
+            }
+          />
+        </Routes>
+      </main>
     </div>
   );
 }
