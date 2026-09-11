@@ -712,6 +712,91 @@ app.openapi(listSignals, async (c) => {
   return c.json({ signals, total: countRow?.total ?? 0, page, limit }, 200);
 });
 
+const SIGNAL_STATUSES = ["new", "queued", "dismissed", "suppressed"] as const;
+
+const updateSignal = createRoute({
+  method: "patch",
+  path: "/api/signals/{id}",
+  tags: ["Signals"],
+  summary: "Change a signal's status, e.g. dismiss it with a reason",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.enum(SIGNAL_STATUSES).optional(),
+            // Why a person said no. Kept because the pattern in the reasons is
+            // the only evidence that a whole source has stopped being worth
+            // sweeping, and nobody can see that from a count of dismissals.
+            dismiss_reason: z.string().max(300).optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: { description: "Updated", content: { "application/json": { schema: z.object({ signal: SignalSchema }) } } },
+    404: { description: "No such signal", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(updateSignal, async (c) => {
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const existing = await get<SignalRow>(`SELECT ${SIGNAL_COLUMNS} FROM signals WHERE id = ?`, [id]);
+  if (!existing) return c.json({ error: "Signal not found" }, 404);
+
+  const row = (await get<SignalRow>(
+    `UPDATE signals SET status = COALESCE(?, status), dismiss_reason = COALESCE(?, dismiss_reason)
+     WHERE id = ? RETURNING ${SIGNAL_COLUMNS}`,
+    [body.status ?? null, body.dismiss_reason ?? null, id],
+  ))!;
+  const stacks = await stacksForDomains([row.domain]);
+  return c.json({ signal: decorate(row, stacks) }, 200);
+});
+
+const runFromSignal = createRoute({
+  method: "post",
+  path: "/api/signals/{id}/run",
+  tags: ["Signals"],
+  summary: "Open a sourcing run for the company behind this signal",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    201: {
+      description: "Run opened and the signal marked queued",
+      content: { "application/json": { schema: z.object({ run: RunSchema, signal: SignalSchema }) } },
+    },
+    404: { description: "No such signal", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Signal is outside its freshness window", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(runFromSignal, async (c) => {
+  const { id } = c.req.valid("param");
+  const signal = await get<SignalRow>(`SELECT ${SIGNAL_COLUMNS} FROM signals WHERE id = ?`, [id]);
+  if (!signal) return c.json({ error: "Signal not found" }, 404);
+  // A run costs enrichment credits, so the window is enforced here and not
+  // only in the UI. Spending them on a filled role is the failure this whole
+  // table exists to prevent, and a stale row is still reachable by URL.
+  if (!isLive(signal.type, signal.occurred_at)) {
+    return c.json({ error: "This signal is outside its freshness window. Dismiss it instead of paying to source it." }, 409);
+  }
+
+  const who = signal.company || signal.domain;
+  const icp = `${who} (${signal.domain}). Why now: ${signal.summary} — ${signal.type}, ${signal.occurred_at}. Source: ${signal.source_url}`;
+  const runId = crypto.randomUUID();
+  await run("INSERT INTO runs (id, icp_prompt, status) VALUES (?, ?, 'pending')", [runId, icp.slice(0, 2000)]);
+  const runRow = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, runId]))!;
+
+  const updated = (await get<SignalRow>(
+    `UPDATE signals SET status = 'queued', run_id = ? WHERE id = ? RETURNING ${SIGNAL_COLUMNS}`,
+    [runId, id],
+  ))!;
+  const stacks = await stacksForDomains([updated.domain]);
+  return c.json({ run: runRow, signal: decorate(updated, stacks) }, 201);
+});
+
 // ── Agent handoff ───────────────────────────────────────────────────
 //
 // Sourcing runs on the org's agent, not in this app: it needs judgment, a real
