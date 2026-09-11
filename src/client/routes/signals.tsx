@@ -123,21 +123,27 @@ export function SignalsRoute() {
   const [liveOnly, setLiveOnly] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Fetched unfiltered on purpose, and the toggle filters in the view. The
+  // server can filter (`?live=true`, which agents use), but doing it here keeps
+  // the stale count available while the queue is filtered — you cannot notice a
+  // source that has started producing only stale rows if the default view hides
+  // its output and the count with it.
   const load = useCallback(async () => {
     try {
       setError(null);
-      const res = await api.signals({ live: liveOnly });
+      const res = await api.signals();
       setSignals([...res.signals].sort(order));
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [liveOnly]);
+  }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const stale = (signals ?? []).filter((s) => !s.live).length;
+  const shown = liveOnly ? (signals ?? []).filter((s) => s.live) : (signals ?? []);
 
   return (
     <Zone>
@@ -152,6 +158,7 @@ export function SignalsRoute() {
                 className="size-3.5 accent-primary"
               />
               Live only
+              {stale > 0 && <span className="text-muted-foreground">({stale} stale)</span>}
             </label>
           }
         >
@@ -166,7 +173,7 @@ export function SignalsRoute() {
 
         {signals === null && !error && <p className="px-3 py-3 text-sm text-muted-foreground">Loading…</p>}
 
-        {signals !== null && signals.length === 0 && (
+        {signals !== null && shown.length === 0 && (
           <Empty
             title={liveOnly ? "No live signals" : "No signals yet"}
             hint={
@@ -177,13 +184,13 @@ export function SignalsRoute() {
           />
         )}
 
-        {signals?.map((s) => <SignalRow key={s.id} signal={s} onChanged={load} />)}
+        {shown.map((s) => <SignalRow key={s.id} signal={s} onChanged={load} />)}
       </Card>
 
-      {!liveOnly && stale > 0 && (
+      {stale > 0 && (
         <p className="px-1 text-xs text-muted-foreground">
-          {stale} of {signals?.length} shown are past their window. A source producing only stale rows has stopped being
-          worth sweeping.
+          {stale} of {signals?.length} are past their window. A source producing only stale rows has stopped being worth
+          sweeping.
         </p>
       )}
     </Zone>

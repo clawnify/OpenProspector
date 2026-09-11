@@ -16,7 +16,7 @@ const NAV: AppNavItem[] = [
   // The app opens on leads. This hidden item is what the app's name opens.
   { id: "home", label: "Leads", href: "/", home: true },
   { id: "leads", label: "Leads", href: "/", icon: "users", color: "blue" },
-  { id: "signals", label: "Signals", href: "/signals", icon: "radio", color: "amber" },
+  { id: "signals", label: "Signals", href: "/signals", icon: "activity", color: "amber" },
   { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
 ];
 
