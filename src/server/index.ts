@@ -17,6 +17,7 @@ import {
   type EnrichOptions,
 } from "./enrich.js";
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
+import { ageDays, dedupeKey, isLive, normalizeDomain, stackCounts } from "./signals.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
 import type { EnrichField, EnrichResult } from "./providers/types.js";
 
@@ -479,6 +480,236 @@ app.openapi(patchRun, async (c) => {
 
   const updated = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, id]))!;
   return c.json({ run: updated }, 200);
+});
+
+// ── Signals ─────────────────────────────────────────────────────────
+
+const SignalSchema = z
+  .object({
+    id: z.string(),
+    domain: z.string(),
+    company: z.string(),
+    type: z.string(),
+    summary: z.string(),
+    source: z.string(),
+    source_url: z.string(),
+    occurred_at: z.string(),
+    detected_at: z.string(),
+    seen_count: z.number().int(),
+    last_seen_at: z.string(),
+    status: z.string(),
+    dismiss_reason: z.string(),
+    run_id: z.string().nullable(),
+    /**
+     * Derived on read, never stored. A signal recorded as live today is stale
+     * next month; a stored flag would quietly lie the moment nobody re-ran the
+     * job that wrote it.
+     */
+    age_days: z.number().int().nullable(),
+    live: z.boolean(),
+    /** Distinct live signal types currently on this company. */
+    stack: z.number().int(),
+  })
+  .openapi("Signal");
+
+const SIGNAL_COLUMNS =
+  "id, domain, company, type, summary, source, source_url, occurred_at, detected_at, seen_count, last_seen_at, status, dismiss_reason, run_id, dedupe_key";
+
+interface SignalRow {
+  id: string;
+  domain: string;
+  company: string;
+  type: string;
+  summary: string;
+  source: string;
+  source_url: string;
+  occurred_at: string;
+  detected_at: string;
+  seen_count: number;
+  last_seen_at: string;
+  status: string;
+  dismiss_reason: string;
+  run_id: string | null;
+  dedupe_key: string;
+}
+
+/**
+ * Live signal types per company, for the companies on this page. Chunked
+ * because D1 caps bound parameters per statement and a full page of domains
+ * would sit right on that limit.
+ */
+async function stacksForDomains(domains: string[]): Promise<Map<string, number>> {
+  const unique = [...new Set(domains.filter(Boolean))];
+  const rows: { domain: string; type: string; occurred_at: string }[] = [];
+  for (let i = 0; i < unique.length; i += 50) {
+    const chunk = unique.slice(i, i + 50);
+    const placeholders = chunk.map(() => "?").join(",");
+    rows.push(
+      ...(await query<{ domain: string; type: string; occurred_at: string }>(
+        `SELECT domain, type, occurred_at FROM signals WHERE status != 'dismissed' AND domain IN (${placeholders})`,
+        chunk,
+      )),
+    );
+  }
+  return stackCounts(rows);
+}
+
+function decorate(row: SignalRow, stacks: Map<string, number>) {
+  const { dedupe_key: _ignored, ...rest } = row;
+  return {
+    ...rest,
+    age_days: ageDays(row.occurred_at),
+    live: isLive(row.type, row.occurred_at),
+    stack: stacks.get(row.domain) ?? 0,
+  };
+}
+
+const SignalInput = z.object({
+  domain: z.string().min(1).openapi({ description: "Company domain; normalized to a bare host" }),
+  company: z.string().max(200).optional(),
+  type: z.string().min(1).max(40).openapi({ description: "hiring | funding | site_change | stack | review, or your own" }),
+  summary: z.string().min(1).max(500).openapi({ description: "One line a person can read and act on" }),
+  source: z.string().max(120).optional().openapi({ description: "Where it was seen, e.g. 'jobs page'" }),
+  source_url: z.string().min(1).openapi({ description: "The evidence. Required: an undemonstrable claim is not usable on a call" }),
+  occurred_at: z
+    .string()
+    .min(1)
+    .openapi({ description: "When the event HAPPENED (ISO 8601), not when you found it. Bump and repost dates are not this." }),
+});
+
+const recordSignals = createRoute({
+  method: "post",
+  path: "/api/signals",
+  tags: ["Signals"],
+  summary: "Record signal sightings. Re-recording the same item is free and counts the repeat",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({ signals: z.array(SignalInput).min(1).max(200) }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Per-sighting outcome",
+      content: {
+        "application/json": {
+          schema: z.object({
+            recorded: z.number().int().openapi({ description: "First time we have seen this item" }),
+            repeated: z.number().int().openapi({ description: "Seen before; seen_count bumped" }),
+            stale: z.number().int().openapi({ description: "Stored as evidence, but outside its freshness window" }),
+            signals: z.array(SignalSchema),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(recordSignals, async (c) => {
+  const input = c.req.valid("json").signals;
+  const stored: SignalRow[] = [];
+  let recorded = 0;
+  let repeated = 0;
+
+  for (const s of input) {
+    const domain = normalizeDomain(s.domain);
+    if (!domain) continue;
+    const key = dedupeKey(s.domain, s.type, s.source_url);
+    // The upsert is what makes a re-sweep free. A repeat is not discarded:
+    // a job post that keeps coming back is a role nobody can fill, and that
+    // is a better reason to call than the first sighting was.
+    const row = await get<SignalRow>(
+      `INSERT INTO signals (id, domain, company, type, summary, source, source_url, occurred_at, dedupe_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(dedupe_key) DO UPDATE SET
+         seen_count = seen_count + 1,
+         last_seen_at = datetime('now'),
+         summary = excluded.summary
+       RETURNING ${SIGNAL_COLUMNS}`,
+      [
+        crypto.randomUUID(),
+        domain,
+        (s.company ?? "").trim(),
+        s.type.trim().toLowerCase(),
+        s.summary.trim(),
+        (s.source ?? "").trim(),
+        s.source_url.trim(),
+        s.occurred_at.trim(),
+        key,
+      ],
+    );
+    if (!row) continue;
+    if (row.seen_count > 1) repeated++;
+    else recorded++;
+    stored.push(row);
+  }
+
+  const stacks = await stacksForDomains(stored.map((r) => r.domain));
+  const signals = stored.map((r) => decorate(r, stacks));
+  return c.json({ recorded, repeated, stale: signals.filter((s) => !s.live).length, signals }, 200);
+});
+
+const listSignals = createRoute({
+  method: "get",
+  path: "/api/signals",
+  tags: ["Signals"],
+  summary: "List signals, newest event first",
+  request: {
+    query: PaginationQuery.extend({
+      status: z.string().optional().openapi({ description: "new | queued | dismissed | suppressed" }),
+      live: z.string().optional().openapi({ description: "'true' to return only signals inside their freshness window" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated signals",
+      content: {
+        "application/json": {
+          schema: z.object({
+            signals: z.array(SignalSchema),
+            total: z.number().int(),
+            page: z.number().int(),
+            limit: z.number().int(),
+          }),
+        },
+      },
+    },
+  },
+});
+
+app.openapi(listSignals, async (c) => {
+  const q = c.req.valid("query");
+  const { page, limit, offset } = paging(q);
+
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (q.status) {
+    clauses.push("status = ?");
+    params.push(q.status);
+  }
+  const search = (q.search || "").trim();
+  if (search) {
+    clauses.push("(company LIKE ? OR domain LIKE ? OR summary LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+  const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+
+  const countRow = await get<{ total: number }>("SELECT COUNT(*) AS total FROM signals" + where, params);
+  const rows = await query<SignalRow>(
+    `SELECT ${SIGNAL_COLUMNS} FROM signals${where} ORDER BY occurred_at DESC, detected_at DESC LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+
+  const stacks = await stacksForDomains(rows.map((r) => r.domain));
+  let signals = rows.map((r) => decorate(r, stacks));
+  // Filtered after decoration because liveness is derived from the clock, not
+  // stored, so it cannot be a SQL predicate without duplicating the windows.
+  if (q.live === "true") signals = signals.filter((s) => s.live);
+
+  return c.json({ signals, total: countRow?.total ?? 0, page, limit }, 200);
 });
 
 // ── Agent handoff ───────────────────────────────────────────────────
