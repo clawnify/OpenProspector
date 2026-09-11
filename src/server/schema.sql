@@ -132,3 +132,53 @@ CREATE TABLE IF NOT EXISTS pending_enrichments (
 
 CREATE INDEX IF NOT EXISTS idx_pending_lead ON pending_enrichments(lead_id);
 CREATE INDEX IF NOT EXISTS idx_pending_run ON pending_enrichments(run_id);
+
+-- A dated, public reason to talk to a company now. Not a lead: there is no
+-- person here, and the subject is the account.
+--
+-- This table exists for two things a stateless sweep cannot do. Re-running a
+-- sweep must not open a second run for an item already seen, because a run
+-- spends enrichment credits. And a job post that keeps reappearing is a role
+-- nobody can fill, which is a better reason to call than the first sighting
+-- was — so a repeat sighting bumps `seen_count` instead of being discarded.
+--
+-- The CRM is a destination for what survives the rules, never the store: an
+-- org keeping its own CRM elsewhere still needs somewhere to dedupe, and
+-- writing every raw sighting to someone's CRM timeline is not that place.
+CREATE TABLE IF NOT EXISTS signals (
+  id TEXT PRIMARY KEY,
+  -- Bare registrable host (see normalizeDomain). The join key to leads.domain
+  -- and to whatever the org calls an account.
+  domain TEXT NOT NULL,
+  company TEXT NOT NULL DEFAULT '',
+  -- hiring|funding|site_change|stack|review, or anything else: an unknown type
+  -- gets the short fallback window rather than being refused, so a new source
+  -- does not need a schema change.
+  type TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  -- No URL, no signal. A claim about a prospect that cannot be shown to them
+  -- is not usable by the person who has to make the call.
+  source_url TEXT NOT NULL,
+  -- When the event HAPPENED. Distinct from detected_at on purpose: job boards
+  -- bump and repost, so the date a listing surfaced is not the date the role
+  -- opened, and every freshness decision is made against this column.
+  occurred_at TEXT NOT NULL,
+  detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- How many sweeps have seen this same item, and when we last did.
+  seen_count INTEGER NOT NULL DEFAULT 1,
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- new: waiting on a person. queued: a run was opened for it.
+  -- dismissed: a person said no, and said why. suppressed: the account was
+  -- already in play, so it is kept as evidence but never routed.
+  status TEXT NOT NULL DEFAULT 'new',
+  dismiss_reason TEXT NOT NULL DEFAULT '',
+  run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+  -- normalizeDomain|type|normalizeUrl. The uniqueness rule, and the reason a
+  -- re-sweep is free.
+  dedupe_key TEXT NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_domain ON signals(domain);
+CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
+CREATE INDEX IF NOT EXISTS idx_signals_occurred ON signals(occurred_at);

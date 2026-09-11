@@ -24,6 +24,30 @@ export interface Lead {
   updated_at: string;
 }
 
+export interface Signal {
+  id: string;
+  domain: string;
+  company: string;
+  type: string;
+  summary: string;
+  source: string;
+  source_url: string;
+  /** When the event happened. Every freshness decision is made against this. */
+  occurred_at: string;
+  detected_at: string;
+  seen_count: number;
+  last_seen_at: string;
+  status: string;
+  dismiss_reason: string;
+  run_id: string | null;
+  /** Server-computed: null when the source gave a date we could not parse. */
+  age_days: number | null;
+  /** Server-computed from occurred_at, never stored. */
+  live: boolean;
+  /** Server-computed: distinct live signal types on this company. */
+  stack: number;
+}
+
 export interface Run {
   id: string;
   icp_prompt: string;
@@ -119,6 +143,23 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ order }),
     }),
+
+  signals: (params: { live?: boolean; status?: string; page?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.live) q.set("live", "true");
+    if (params.status) q.set("status", params.status);
+    if (params.page) q.set("page", String(params.page));
+    const qs = q.toString();
+    return req<{ signals: Signal[]; total: number; page: number; limit: number }>(`/api/signals${qs ? `?${qs}` : ""}`);
+  },
+
+  dismissSignal: (id: string, dismiss_reason: string) =>
+    req<{ signal: Signal }>(`/api/signals/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "dismissed", dismiss_reason }),
+    }),
+
+  runFromSignal: (id: string) => req<{ run: Run; signal: Signal }>(`/api/signals/${id}/run`, { method: "POST" }),
 
   runs: (page = 1) => req<{ runs: Run[]; total: number; page: number; limit: number }>(`/api/runs?page=${page}`),
 

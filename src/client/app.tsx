@@ -3,6 +3,7 @@ import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Upload } from "lucide-react";
 import { AppNav, reportLocation, type AppNavItem } from "@clawnify/app/client";
 import { api, ApiError, type Lead, type Provider, type Run } from "./api";
+import { SignalsRoute } from "./routes/signals";
 import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
 import { RunsPanel } from "./components/runs-panel";
@@ -15,6 +16,7 @@ const NAV: AppNavItem[] = [
   // The app opens on leads. This hidden item is what the app's name opens.
   { id: "home", label: "Leads", href: "/", home: true },
   { id: "leads", label: "Leads", href: "/", icon: "users", color: "blue" },
+  { id: "signals", label: "Signals", href: "/signals", icon: "activity", color: "amber" },
   { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
 ];
 
@@ -216,7 +218,11 @@ export function App() {
 
   const location = useLocation();
   const routerNavigate = useNavigate();
-  const active = location.pathname.startsWith("/settings") ? "settings" : "leads";
+  const active = location.pathname.startsWith("/settings")
+    ? "settings"
+    : location.pathname.startsWith("/signals")
+      ? "signals"
+      : "leads";
 
   // Lets the dashboard restore this exact screen on reload.
   useEffect(() => {
@@ -251,6 +257,17 @@ export function App() {
 
       <main className="min-w-0 flex-1 overflow-auto">
         <Routes>
+          <Route
+            path="/signals"
+            element={
+              <div className="flex min-h-full flex-col">
+                <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
+                  <h1 className="text-[1.375rem] font-semibold tracking-[-0.01em]">Signals</h1>
+                </header>
+                <SignalsRoute />
+              </div>
+            }
+          />
           <Route
             path="/settings"
             element={
