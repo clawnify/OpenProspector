@@ -8,3 +8,4 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@clawnify/queue@0.1.0'
   - '@clawnify/app@0.2.1'
+  - '@clawnify/agents@0.1.1'

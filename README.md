@@ -25,6 +25,46 @@ The savings are not theoretical:
 
 > **Where this *doesn't* win.** Most vendors sell credits on a monthly floor — Findymail's entry plan is $99/mo for 5,000 credits. Below roughly **800 leads/month**, a usage-priced SaaS is genuinely cheaper. This template is for teams doing real volume.
 
+## LinkedIn signals
+
+Open **Signals → New signal** to choose a starting point:
+
+- **My LinkedIn posts:** one profile's recent and new posts.
+- **Team posts:** posts from up to ten explicitly selected employee profiles.
+- **Specific post:** one LinkedIn post URL, checked for newly observed engagement.
+- **LinkedIn search:** posts and conversations matching a query.
+- **Start from scratch:** a blank LinkedIn research brief.
+
+Choose the agent, describe your ICP, and run once or repeat daily/weekly. The
+first check starts immediately. Recurring work uses that agent's native
+scheduler, with the full versioned procedure embedded in its prompt; no skill
+installation on the agent is needed. The app must have access to the Clawnify
+agents API and the selected agent must support app-created schedule receipts.
+
+The agent uses its existing logged-in browser and stops at login challenges,
+access restrictions or rate limits. Checks are bounded to ten posts and 100
+accessible engagements. Coverage is reported, not assumed complete. **Newly
+observed is not necessarily newly posted**: previously inaccessible engagement
+can appear later.
+
+Uncheck **Include existing engagement** to establish a hidden first-run
+baseline. A failed check does not complete that baseline. Repeated sightings
+are deduplicated per monitor; different people and comments remain distinct.
+Findings retain evidence, ICP fit and outreach context. **Add to people** is an
+explicit, idempotent review action; monitoring never starts enrichment or outreach.
+
+Saved monitors can be rerun or paused. An optional end date blocks further
+research and pauses the native schedule when it next attempts a check. Pausing
+also blocks new findings if the agent is temporarily unreachable. Interrupting
+a check closes it to writes but does not terminate the agent's session. An
+uncertain dispatch is not automatically retried; inspect or interrupt it first.
+Source/agent/criteria edits are not part of this first version: pause the old
+monitor and create another to change its configuration.
+
+Local tests require Node 22.13+ (`node:sqlite`). `pnpm test`, `pnpm typecheck`,
+and `pnpm build` generate the embedded procedure from
+`skills/linkedin-signals/SKILL.md` before running.
+
 ## Providers
 
 Each field has its own independently-ordered waterfall. The order below is the shipping default; **you can reorder any of it in the UI**, and you should — the optimal order depends on which vendors you already pay for and how your ICP resolves.

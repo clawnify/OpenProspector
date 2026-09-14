@@ -16,6 +16,42 @@ CREATE TABLE IF NOT EXISTS runs (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
+-- A saved discovery instruction, not a finding. The agent's native scheduler
+-- owns timing; this row owns source, ICP, baseline and the app's stop gate.
+CREATE TABLE IF NOT EXISTS signal_monitors (
+  id TEXT PRIMARY KEY,
+  config TEXT NOT NULL,
+  create_request TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  schedule_id TEXT,
+  schedule_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS signal_checks (
+  id TEXT PRIMARY KEY,
+  monitor_id TEXT NOT NULL REFERENCES signal_monitors(id),
+  status TEXT NOT NULL DEFAULT 'sourcing',
+  baseline INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  coverage TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_check_active ON signal_checks(monitor_id) WHERE status = 'sourcing';
+CREATE INDEX IF NOT EXISTS idx_signal_checks_monitor ON signal_checks(monitor_id, created_at);
+CREATE TABLE IF NOT EXISTS signal_observations (
+  id TEXT PRIMARY KEY,
+  monitor_id TEXT NOT NULL REFERENCES signal_monitors(id),
+  check_id TEXT NOT NULL REFERENCES signal_checks(id),
+  fingerprint TEXT NOT NULL,
+  details TEXT NOT NULL,
+  visible INTEGER NOT NULL,
+  lead_id TEXT,
+  observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(monitor_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_observations_feed ON signal_observations(visible, observed_at);
+
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY,
   run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,

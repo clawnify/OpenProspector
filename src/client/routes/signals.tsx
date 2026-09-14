@@ -10,7 +10,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CircleAlert, ExternalLink, Layers, RefreshCw } from "lucide-react";
-import { Badge, Button, Card, CardTitle, Chip, Empty, Favicon, Zone } from "../components/ui";
+import { Badge, Button, Chip, Favicon } from "../components/ui";
+import { SignalMonitors, MonitorFindings, Pager } from "../components/signal-monitors";
 import { api, type Signal } from "../api";
 
 function ageLabel(signal: Signal): string {
@@ -102,7 +103,7 @@ function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => voi
       {!dismissed && !queued && (
         <div className="flex items-center gap-2">
           <Button
-            variant="primary"
+            variant="secondary"
             disabled={busy || !signal.live}
             title={signal.live ? "Open a sourcing run for this company" : "Outside its freshness window, so it cannot be sourced"}
             onClick={() => void act(() => api.runFromSignal(signal.id))}
@@ -119,80 +120,29 @@ function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => voi
 }
 
 export function SignalsRoute() {
-  const [signals, setSignals] = useState<Signal[] | null>(null);
-  const [liveOnly, setLiveOnly] = useState(true);
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  // Fetched unfiltered on purpose, and the toggle filters in the view. The
-  // server can filter (`?live=true`, which agents use), but doing it here keeps
-  // the stale count available while the queue is filtered — you cannot notice a
-  // source that has started producing only stale rows if the default view hides
-  // its output and the count with it.
   const load = useCallback(async () => {
     try {
-      setError(null);
-      const res = await api.signals();
+      const res = await api.signals({ page });
       setSignals([...res.signals].sort(order));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const stale = (signals ?? []).filter((s) => !s.live).length;
-  const shown = liveOnly ? (signals ?? []).filter((s) => s.live) : (signals ?? []);
-
+      setTotal(res.total);
+      setError(null);
+    } catch (e) { setError((e as Error).message); }
+  }, [page]);
+  useEffect(() => { void load(); }, [load]);
   return (
-    <Zone>
-      <Card>
-        <CardTitle
-          right={
-            <label className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm px-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
-              <input
-                type="checkbox"
-                checked={liveOnly}
-                onChange={(e) => setLiveOnly(e.currentTarget.checked)}
-                className="size-3.5 accent-primary"
-              />
-              Live only
-              {stale > 0 && <span className="text-muted-foreground">({stale} stale)</span>}
-            </label>
-          }
-        >
-          Signals
-        </CardTitle>
-
-        {error && (
-          <p className="inline-flex items-center gap-1.5 px-3 py-3 text-sm text-destructive">
-            <CircleAlert size={14} aria-hidden /> {error}
-          </p>
-        )}
-
-        {signals === null && !error && <p className="px-3 py-3 text-sm text-muted-foreground">Loading…</p>}
-
-        {signals !== null && shown.length === 0 && (
-          <Empty
-            title={liveOnly ? "No live signals" : "No signals yet"}
-            hint={
-              liveOnly
-                ? "Everything recorded is outside its freshness window. Untick 'Live only' to see what went stale."
-                : "A signal is a dated, public reason to call: a job post, a raise, a new page about the problem you solve."
-            }
-          />
-        )}
-
-        {shown.map((s) => <SignalRow key={s.id} signal={s} onChanged={load} />)}
-      </Card>
-
-      {stale > 0 && (
-        <p className="px-1 text-xs text-muted-foreground">
-          {stale} of {signals?.length} are past their window. A source producing only stale rows has stopped being worth
-          sweeping.
-        </p>
-      )}
-    </Zone>
+    <div className="space-y-8 p-6">
+      <SignalMonitors />
+      <MonitorFindings />
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {signals.length > 0 && <section aria-label="Company findings">
+        <h2 className="card-title">Company findings <span className="text-muted-foreground">{total}</span></h2>
+        {signals.map(s => <SignalRow key={s.id} signal={s} onChanged={load} />)}
+        <Pager page={page} total={total} onPage={setPage} />
+      </section>}
+    </div>
   );
 }
