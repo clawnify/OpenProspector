@@ -1,5 +1,6 @@
 // Thin typed wrapper over the app's own API. Every list call is paginated —
 // the server clamps limit to 100, so there is no way to ask for the table.
+import type { Monitor, MonitorConfig, Observation } from "../shared/monitors";
 
 export interface Lead {
   id: string;
@@ -133,6 +134,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  signalAgents: (page = 1) => req<{ servers: AgentServer[]; page: { has_more: boolean }; selected: string | null }>(`/api/signal-agents?page=${page}`),
+  monitors: (page = 1) => req<{ monitors: Monitor[]; total: number; page: number; limit: number }>(`/api/monitors?page=${page}`),
+  createMonitor: (id: string, config: MonitorConfig) => req<{ monitor: Monitor }>("/api/monitors", { method: "POST", body: JSON.stringify({ id, ...config }) }),
+  toggleMonitor: (id: string, active: boolean) => req<{ monitor: Monitor }>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
+  runMonitor: (monitor: string, id: string) => req<{ check: { id: string; status: string } }>(`/api/monitors/${monitor}/run`, { method: "POST", body: JSON.stringify({ id }) }),
+  interruptCheck: (id: string) => req<{ ok: boolean }>(`/api/monitor-checks/${id}/interrupt`, { method: "POST" }),
+  observations: (page = 1) => req<{ observations: Observation[]; total: number; page: number; limit: number }>(`/api/monitor-observations?page=${page}`),
+  promoteObservation: (id: string) => req<{ lead_id: string }>(`/api/monitor-observations/${id}/lead`, { method: "POST" }),
   providers: (withCredits = false) =>
     req<{ providers: Provider[]; waterfalls: Record<string, string[]>; cache_max_age_days: number }>(
       `/api/providers${withCredits ? "?credits=true" : ""}`,

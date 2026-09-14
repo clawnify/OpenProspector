@@ -19,6 +19,7 @@ import {
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { ageDays, dedupeKey, isLive, normalizeDomain, stackCounts } from "./signals.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
+import { monitorRoutes } from "./monitor-routes.js";
 import type { EnrichField, EnrichResult } from "./providers/types.js";
 
 type Env = {
@@ -41,6 +42,8 @@ const app = createApp<Env>({
   description:
     "Find and enrich B2B leads with your own provider keys. ICP search, a configurable enrichment waterfall, and export — no markup, no per-lead pricing.",
 });
+
+app.route("/", monitorRoutes);
 
 // ── Shared schemas ──────────────────────────────────────────────────
 

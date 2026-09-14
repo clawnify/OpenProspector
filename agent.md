@@ -65,11 +65,31 @@ unreported task looks identical to a dead one.
 
 ## Pages
 
+- `/signals` — New signal offers own-post, team-post, single-post, query or custom monitors;
+  review engagement evidence before explicitly adding someone to People.
+
 - `/` — the whole app: ICP box, both waterfall panels, and the leads table.
   **Screenshot-friendly**: the leads table with resolved emails and provider
   attribution is the money shot.
 
 ## API
+
+### LinkedIn monitor checks
+
+Monitor tasks include a complete, versioned procedure snapshot in their prompt.
+Do not install a skill file or create another schedule. Read the saved monitor
+each time; it owns the current ICP and stop gate. The native agent scheduler owns
+timing. Use `/api/monitors/{id}/checks` to claim a check (409/410 means stop),
+then `/api/monitor-checks/{id}/observations` to record engagement and
+`PATCH /api/monitor-checks/{id}` to report progress, coverage or failure.
+
+- Stop at LinkedIn login challenges, restrictions or rate limits; never bypass.
+- Record facts separately from inferred ICP fit. A reaction is not buying intent.
+- Person-level findings do not require a guessed company domain or event date.
+- The app handles baseline visibility and deduplication; submit observed matches
+  even when you think they were seen before. Coverage is bounded, not exhaustive.
+- These findings do **not** automatically create leads, enrich or contact anyone.
+  The user chooses **Add to people**. Never call enrichment/export during a check.
 
 Full schemas: `GET /llms.txt` (index) or `GET /api/openapi.json`. Every list
 endpoint is paginated (`?page=`, `?limit=` max 100, `?search=`) — nothing

@@ -6,3 +6,4 @@ dist/
 !.dev.vars.example
 *.log
 .DS_Store
+src/server/signal-skill.gen.ts
