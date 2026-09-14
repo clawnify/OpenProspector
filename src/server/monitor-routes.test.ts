@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { createApp } from "@clawnify/app";
-import { MonitorInput, ObservationInput } from "../shared/monitors";
+import { MonitorInput, ObservationInput, CustomObservationInput } from "../shared/monitors";
 import { signalBrief } from "./signal-brief";
-import { signalSkill } from "./signal-skill.gen";
+import { signalSkill, customSignalSkill } from "./signal-skill.gen";
 
 let db: DatabaseSync;
 vi.mock("./db.js", () => ({
@@ -18,6 +18,9 @@ const env = { CLAWNIFY_TOKEN: "test-only-token" };
 const serverId = "46d3c39e-d490-433d-b27c-db7e2d6fd396";
 const cfg = { name: "Agency mentions", kind: "post" as const, source: "https://www.linkedin.com/posts/test_activity-123", icp: "Marketing agency founders", server_id: serverId, frequency: "once" as const, include_existing: true, ends_at: null };
 const finding = { person_name: "Test Person", profile_url: "https://www.linkedin.com/in/test-person", post_url: cfg.source, source_url: cfg.source, engagement: "comment" as const, quote: "We run a B2B agency", occurred_at: null, why_fit: "Runs an agency", outreach_context: "Commented on this third-party post" };
+const customConfig = { kind: "custom", source: "Find recent magazine articles about SGM Magnetics and explain why the coverage matters.", icp: "" };
+const companyFinding = { kind: "custom" as const, subject: { type: "company" as const, name: "SGM Magnetics", domain: "sgmmagnetics.com" }, source_url: "https://magazine.example/articles/sgm", summary: "An industry magazine covered the company's new equipment.", reason: "Recent coverage of the company the user wants to monitor.", occurred_at: null };
+const personFinding = { ...companyFinding, subject: { type: "person" as const, name: "Test Person", profile_url: "https://agency.example/team/test-person" }, summary: "An agency founder discussed their reporting challenges.", reason: "Runs an agency and described a relevant problem." };
 const schedule = { id: "native-schedule-1", enabled: true };
 let external: ReturnType<typeof vi.fn>;
 
@@ -67,8 +70,10 @@ describe("template input and embedded procedure", () => {
     }
   });
   it("allows a custom brief without imposing a template's URL shape", () => {
-    const input = { ...cfg, kind: "custom", name: "My custom monitor", source: "Find LinkedIn conversations where agency founders discuss client reporting." };
+    const input = { ...cfg, ...customConfig, name: "My custom monitor" };
     expect(MonitorInput.safeParse(input).success).toBe(true);
+    expect(MonitorInput.safeParse({ ...input, icp: undefined }).success).toBe(true);
+    expect(MonitorInput.safeParse({ ...cfg, icp: "" }).success).toBe(false);
     expect(MonitorInput.safeParse({ ...input, source: "" }).success).toBe(false);
     expect(MonitorInput.safeParse({ ...input, name: "" }).success).toBe(false);
   });
@@ -91,6 +96,105 @@ describe("template input and embedded procedure", () => {
   it("does not fabricate dates and rejects quotes on reactions", () => {
     expect(ObservationInput.parse(finding).occurred_at).toBeNull();
     expect(ObservationInput.safeParse({ ...finding, engagement: "reaction" }).success).toBe(false);
+  });
+});
+
+describe("custom person/company signals", () => {
+  it.each(["once", "daily", "weekly"])("attaches the custom procedure to %s checks and schedules", async frequency => {
+    const id = await create({ ...customConfig, frequency });
+    const checkId = crypto.randomUUID();
+    expect((await request(`/api/monitors/${id}/run`, "POST", { id: checkId })).status).toBe(202);
+    expect(external).toHaveBeenCalledTimes(frequency === "once" ? 1 : 2);
+    for (const [url, options] of external.mock.calls) {
+      const body = JSON.parse(options.body);
+      const prompt = url.endsWith("/tasks") ? body.instruction : body.text;
+      expect(prompt).toContain(customSignalSkill.content);
+      expect(prompt).toContain(customSignalSkill.hash);
+      expect(prompt).toContain(id);
+      expect(prompt.length).toBeLessThanOrEqual(4000);
+      expect(prompt).not.toContain(signalSkill.content);
+      expect(prompt).not.toContain(env.CLAWNIFY_TOKEN);
+    }
+  });
+  it("preserves instructions in legacy custom ICP fields and accepts their old snapshot output", async () => {
+    const icp = "http://www.sgmmagnetics.com/ check for any recent publications on magazine and news about them";
+    const id = await create({ ...customConfig, source: "not via linkedin. but via browser search", icp });
+    expect((await request(`/api/monitors/${id}`)).body.monitor.icp).toBe(icp);
+    const check = await begin(id);
+    expect((await record(check.id)).status).toBe(200);
+  });
+  it("saves an identified company with reason and article evidence, never a fabricated person", async () => {
+    const check = await begin(await create(customConfig));
+    expect((await record(check.id, [companyFinding])).body.recorded).toBe(1);
+    const item = (await request("/api/monitor-observations")).body.observations[0];
+    expect(item).toMatchObject(companyFinding);
+    expect(item.person_name).toBeUndefined();
+    expect((await request(`/api/monitor-observations/${item.id}/lead`, "POST")).status).toBe(400);
+    expect(db.prepare("SELECT COUNT(*) n FROM leads").get()!.n).toBe(0);
+    expect(external).not.toHaveBeenCalled();
+  });
+  it("requires a supported subject, reason and evidence and rejects malformed/unsafe identities", async () => {
+    const check = await begin(await create(customConfig));
+    const invalid = [
+      { ...companyFinding, subject: undefined }, { ...companyFinding, reason: " " },
+      { ...companyFinding, source_url: "" }, { ...companyFinding, summary: "" },
+      { ...companyFinding, subject: { type: "article", name: "News" } },
+      { ...companyFinding, subject: { ...companyFinding.subject, domain: "https://sgmmagnetics.com/path" } },
+      ...["not a url", "javascript:alert(1)", "data:text/html,test", "https://user:pass@example.com"].flatMap(url => [
+        { ...companyFinding, source_url: url }, { ...personFinding, subject: { ...personFinding.subject, profile_url: url } },
+      ]),
+    ];
+    for (const item of invalid) expect((await record(check.id, [item])).status).toBe(400);
+    expect((await request("/api/monitor-observations")).body.total).toBe(0);
+  });
+  it("does not weaken the LinkedIn templates or partially record mixed batches", async () => {
+    const check = await begin(await create());
+    expect((await record(check.id, [finding, companyFinding])).status).toBe(400);
+    expect((await request("/api/monitor-observations")).body.total).toBe(0);
+    expect((await record(check.id)).body.recorded).toBe(1);
+  });
+  it("deduplicates by subject and evidence, independent of generated wording", async () => {
+    const first = CustomObservationInput.parse(companyFinding);
+    const equivalent = CustomObservationInput.parse({ ...companyFinding, subject: { ...companyFinding.subject, domain: "WWW.SGMMAGNETICS.COM", name: "SGM" }, source_url: `${companyFinding.source_url}?utm_source=test`, reason: "Reworded reason" });
+    expect(await observationFingerprint(first)).toBe(await observationFingerprint(equivalent));
+    expect(await observationFingerprint(first)).not.toBe(await observationFingerprint(CustomObservationInput.parse(personFinding)));
+    const check = await begin(await create(customConfig));
+    await Promise.all(Array.from({ length: 5 }, () => record(check.id, [first, equivalent])));
+    expect((await request("/api/monitor-observations")).body.total).toBe(1);
+  });
+  it("hides existing custom findings in the baseline and surfaces new evidence later", async () => {
+    const id = await create({ ...customConfig, include_existing: false });
+    const first = await begin(id);
+    expect((await record(first.id, [companyFinding])).body).toEqual({ recorded: 1, baseline: true });
+    expect((await request("/api/monitor-observations")).body.total).toBe(0);
+    await finish(first.id);
+    const next = await begin(id);
+    expect((await record(next.id, [companyFinding])).body.recorded).toBe(0);
+    expect((await record(next.id, [{ ...companyFinding, source_url: "https://magazine.example/articles/new" }])).body.recorded).toBe(1);
+    expect((await request("/api/monitor-observations")).body.total).toBe(1);
+  });
+  it("explicitly promotes a non-LinkedIn person idempotently without inventing a LinkedIn URL", async () => {
+    const check = await begin(await create(customConfig));
+    await record(check.id, [personFinding, { ...personFinding, source_url: "https://magazine.example/another" }]);
+    expect(db.prepare("SELECT COUNT(*) n FROM leads").get()!.n).toBe(0);
+    const feed = (await request("/api/monitor-observations")).body.observations;
+    const results = await Promise.all([...feed, ...feed].map(item => request(`/api/monitor-observations/${item.id}/lead`, "POST")));
+    expect(results.every(r => r.status === 200)).toBe(true);
+    expect(new Set(results.map(r => r.body.lead_id)).size).toBe(1);
+    const lead = db.prepare("SELECT * FROM leads").get()!;
+    expect(lead.linkedin_url).toBe("");
+    expect(lead.source).toBe("custom");
+    expect(lead.evidence).toContain(personFinding.subject.profile_url);
+    expect(lead.evidence).toContain(personFinding.reason);
+    expect(external).not.toHaveBeenCalled();
+  });
+  it("reuses the same person across custom and LinkedIn findings with a verified LinkedIn identity", async () => {
+    const linked = await begin(await create()); await record(linked.id);
+    const custom = await begin(await create(customConfig));
+    await record(custom.id, [{ ...personFinding, subject: { ...personFinding.subject, profile_url: finding.profile_url } }]);
+    const feed = (await request("/api/monitor-observations")).body.observations;
+    for (const item of feed) expect((await request(`/api/monitor-observations/${item.id}/lead`, "POST")).status).toBe(200);
+    expect(db.prepare("SELECT COUNT(*) n FROM leads").get()!.n).toBe(1);
   });
 });
 

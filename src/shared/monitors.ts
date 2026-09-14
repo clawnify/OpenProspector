@@ -6,7 +6,7 @@ export const MONITOR_TEMPLATES = [
   { id: "post", title: "Specific post", description: "Keep checking one post for new comments, mentions and reactions.", label: "LinkedIn post URL", placeholder: "https://www.linkedin.com/posts/…" },
   { id: "query", title: "LinkedIn search", description: "Find relevant posts and conversations using a search query.", label: "Search query", placeholder: "looking for a marketing agency" },
 ] as const;
-export const CUSTOM_MONITOR = { id: "custom", title: "Start from scratch", description: "Describe the LinkedIn research you want your agent to do.", label: "What should the agent monitor on LinkedIn?", placeholder: "Describe the posts, profiles or conversations to check, and what to look for." } as const;
+export const CUSTOM_MONITOR = { id: "custom", title: "Start from scratch", description: "Write your own prompt. Each finding identifies a person or company, with a reason and supporting evidence.", label: "Prompt", placeholder: "Describe what to look for, which people or companies matter, and why a finding would be relevant." } as const;
 export type MonitorKind = typeof MONITOR_TEMPLATES[number]["id"] | "custom";
 
 export function linkedinUrl(value: string, kind: "profile" | "post"): boolean {
@@ -24,12 +24,14 @@ export const MonitorInput = z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(["own", "team", "post", "query", "custom"]),
   source: z.string().trim().min(3).max(2500),
-  icp: z.string().trim().min(3).max(1000),
+  icp: z.string().trim().max(1000).default(""),
   server_id: z.string().uuid(),
   frequency: z.enum(["once", "daily", "weekly"]),
   include_existing: z.boolean(),
   ends_at: z.string().datetime().nullable(),
 }).strict().superRefine((v, ctx) => {
+  if (v.kind !== "custom" && v.icp.length < 3)
+    ctx.addIssue({ code: "custom", path: ["icp"], message: "Describe who we should look for." });
   const sources = v.source.split(/\s+/);
   if (v.kind === "post" && !linkedinUrl(v.source, "post"))
     ctx.addIssue({ code: "custom", path: ["source"], message: "Enter an HTTPS LinkedIn post URL or lnkd.in short link." });
@@ -64,6 +66,27 @@ export const ObservationInput = z.object({
   if (["comment", "mention"].includes(v.engagement) && !v.quote)
     ctx.addIssue({ code: "custom", path: ["quote"], message: "Include the exact comment or mention text." });
 });
-export type Observation = z.infer<typeof ObservationInput> & {
+const WebUrl = z.string().trim().max(1000).url().refine(value => {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  } catch { return false; }
+}, "Use an HTTP(S) URL without credentials");
+const CompanyDomain = z.string().trim().toLowerCase().max(253)
+  .regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "Use the verified company domain, without a URL path")
+  .transform(value => value.replace(/^www\./, ""));
+export const CustomObservationInput = z.object({
+  kind: z.literal("custom"),
+  subject: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("person"), name: z.string().trim().min(1).max(200), profile_url: WebUrl }).strict(),
+    z.object({ type: z.literal("company"), name: z.string().trim().min(1).max(200), domain: CompanyDomain }).strict(),
+  ]),
+  source_url: WebUrl,
+  summary: z.string().trim().min(1).max(1000),
+  reason: z.string().trim().min(1).max(1000),
+  occurred_at: z.string().datetime().nullable(),
+}).strict();
+export const SignalObservationInput = z.union([ObservationInput, CustomObservationInput]);
+export type Observation = z.infer<typeof SignalObservationInput> & {
   id: string; monitor_id: string; observed_at: string; lead_id: string | null;
 };

@@ -1,7 +1,7 @@
 ---
 name: linkedin-signals
 description: Check a saved LinkedIn monitor and record attributable engagement for ICP review.
-version: 2
+version: 3
 ---
 
 # LinkedIn monitoring
@@ -21,8 +21,7 @@ weak interest, not buying intent. Do not install this skill on the agent.
    recent/new posts. For team, only the listed employee profiles. For post, open
    that one URL; follow short links only to LinkedIn and use the resolved post
    permalink in results. For query, use LinkedIn post search with the supplied
-   query. For custom, use source as a LinkedIn research brief within these same
-   safety and volume limits. Look back at most 30 days; examine at most 10
+   query. Look back at most 30 days; examine at most 10
    posts total and 100 accessible engagements per check. If login, CAPTCHA,
    rate limits or access restrictions block you, stop and report the block.
    Do not bypass restrictions, ask for passwords, or claim complete coverage.
