@@ -32,6 +32,8 @@ function order(a: Signal, b: Signal): number {
 function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+  const [reason, setReason] = useState("");
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -46,11 +48,6 @@ function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => voi
     }
   }
 
-  function dismiss() {
-    const reason = window.prompt("Why is this not worth a call? The reasons are how a rotting source gets noticed.");
-    if (reason === null) return;
-    void act(() => api.dismissSignal(signal.id, reason.trim() || "no reason given"));
-  }
 
   const dismissed = signal.status === "dismissed";
   const queued = signal.status === "queued";
@@ -110,10 +107,27 @@ function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => voi
           >
             Source this
           </Button>
-          <Button variant="ghost" disabled={busy} onClick={dismiss}>
+          <Button variant="ghost" disabled={busy} onClick={() => setDismissing(true)}>
             Dismiss
           </Button>
         </div>
+      )}
+      {dismissing && !dismissed && !queued && (
+        <form className="space-y-2" onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy) void act(() => api.dismissSignal(signal.id, reason.trim() || "no reason given"));
+        }}>
+          <label className="block text-sm">
+            Reason for dismissal
+            <textarea autoFocus className="input mt-1 w-full py-2" rows={2}
+              maxLength={300} value={reason} disabled={busy}
+              onChange={(event) => setReason(event.target.value)} />
+          </label>
+          <div className="flex gap-2">
+            <Button type="submit" disabled={busy}>Confirm dismissal</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => { setDismissing(false); setReason(""); }}>Cancel</Button>
+          </div>
+        </form>
       )}
     </div>
   );
