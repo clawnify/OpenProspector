@@ -16,7 +16,7 @@ export function Pager({ page, total, onPage }: { page: number; total: number; on
   </div>;
 }
 
-function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onClose: () => void; onSaved: () => void }) {
+export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onClose: () => void; onSaved: () => void }) {
   const template = kind === "custom" ? CUSTOM_MONITOR : MONITOR_TEMPLATES.find(t => t.id === kind)!;
   const [name, setName] = useState(kind === "custom" ? "" : template.title as string);
   const [source, setSource] = useState("");
@@ -81,11 +81,11 @@ function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onClose: (
       <fieldset disabled={busy || submitted} className="space-y-4 disabled:opacity-60">
         <label className="block text-sm">Name<input className="input mt-1 w-full" value={name} maxLength={100} onChange={e => setName(e.target.value)} required /></label>
         <label className="block text-sm">{template.label}
-          <textarea autoFocus className="input mt-1 min-h-20 w-full py-2" rows={kind === "team" ? 3 : 2} value={source} placeholder={template.placeholder} maxLength={kind === "query" ? 500 : 2500} onChange={e => setSource(e.target.value)} required />
+          <textarea autoFocus className={`input mt-1 w-full py-2 ${kind === "custom" ? "min-h-32" : "min-h-20"}`} rows={kind === "custom" ? 5 : kind === "team" ? 3 : 2} value={source} placeholder={template.placeholder} maxLength={kind === "query" ? 500 : 2500} onChange={e => setSource(e.target.value)} required />
         </label>
-        <label className="block text-sm">Who should we look for?
+        {kind !== "custom" && <label className="block text-sm">Who should we look for?
           <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} placeholder="For example: founders of small marketing agencies serving B2B companies" maxLength={1000} onChange={e => setIcp(e.target.value)} required />
-        </label>
+        </label>}
         <div className="grid gap-4 md:grid-cols-2">
           <div><label className="block text-sm">Agent
             <select className="input mt-1 w-full" value={serverId} onChange={e => setServerId(e.target.value)} required disabled={!agentsReady}>
@@ -102,10 +102,10 @@ function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onClose: (
         {frequency !== "once" && <label className="block text-sm">Stop after (optional, your local time)
           <input type="datetime-local" className="input mt-1 w-full" value={ends} onChange={e => setEnds(e.target.value)} />
         </label>}
-        <label className="flex items-start gap-2 text-sm"><input className="mt-1 accent-primary" type="checkbox" checked={includeExisting} onChange={e => setIncludeExisting(e.target.checked)} />Include existing engagement on the first check</label>
-        {!includeExisting && <p className="text-sm text-muted-foreground">The first successful check establishes a baseline. Later checks show newly observed engagement, not necessarily newly posted engagement.</p>}
+        <label className="flex items-start gap-2 text-sm"><input className="mt-1 accent-primary" type="checkbox" checked={includeExisting} onChange={e => setIncludeExisting(e.target.checked)} />{kind === "custom" ? "Include existing findings on the first check" : "Include existing engagement on the first check"}</label>
+        {!includeExisting && <p className="text-sm text-muted-foreground">{kind === "custom" ? "The first successful check establishes a baseline. Later checks show newly observed findings, not necessarily newly published events." : "The first successful check establishes a baseline. Later checks show newly observed engagement, not necessarily newly posted engagement."}</p>}
       </fieldset>
-      <p className="text-xs text-muted-foreground">Uses the agent’s logged-in LinkedIn browser. Checks cover up to 10 posts and 100 accessible engagements. No outreach or enrichment is started.</p>
+      <p className="text-xs text-muted-foreground">{kind === "custom" ? "The agent follows your prompt using its available research tools. Findings must identify a person or company, explain the signal, and link to evidence. No outreach or enrichment is started." : "Uses the agent’s logged-in LinkedIn browser. Checks cover up to 10 posts and 100 accessible engagements. No outreach or enrichment is started."}</p>
       {agentError && <p role="alert" className="text-sm text-destructive">Couldn’t load agents: {agentError} <Button variant="ghost" onClick={() => setAgentRetry(n => n + 1)}>Retry agents</Button></p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {submitted && error && <p className="text-xs text-muted-foreground">Setup may already exist. Retry uses the same IDs; check the saved monitor below before starting another.</p>}
@@ -129,7 +129,7 @@ function SavedMonitor({ monitor: m, onChanged }: { monitor: Monitor; onChanged: 
   return <article className="border-b border-border py-4 last:border-b-0">
     <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-medium">{m.name}</h3><Chip>{FREQUENCIES[m.frequency]}</Chip><Badge tone={running ? "warning" : "neutral"}>{expired ? "Ended" : !m.active ? "Paused" : running ? "Checking" : "Ready"}</Badge></div>
     <p className="mt-1 break-words text-xs text-muted-foreground">{m.source}</p>
-    <p className="mt-1 text-sm text-muted-foreground">{m.icp}</p>
+    {m.icp && <p className="mt-1 text-sm text-muted-foreground">{m.icp}</p>}
     {m.last_check && <p className="mt-2 text-xs text-muted-foreground">Last check: {m.last_check.status} · {m.last_check.updated_at} UTC</p>}
     {m.last_check?.coverage && <p className="mt-1 text-xs text-muted-foreground">Coverage: {m.last_check.coverage}</p>}
     {m.ends_at && <p className="mt-1 text-xs text-muted-foreground">Ends: {new Date(m.ends_at).toLocaleString()}</p>}
@@ -186,16 +186,22 @@ export function SignalMonitors() {
   </section>;
 }
 
-function Finding({ item, onChanged }: { item: Observation; onChanged: () => void }) {
+export function Finding({ item, onChanged }: { item: Observation; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return <article className="space-y-2 border-b border-border py-4 last:border-b-0">
+    {"kind" in item ? <>
+      <div className="flex flex-wrap items-center gap-2"><a className="text-sm font-medium underline" href={item.subject.type === "company" ? `https://${item.subject.domain}` : item.subject.profile_url} target="_blank" rel="noreferrer">{item.subject.name}</a><Badge>{item.subject.type === "company" ? "Company" : "Person"}</Badge></div>
+      <p className="text-sm">{item.summary}</p>
+      <p className="text-sm"><span className="font-medium">Signal reason: </span>{item.reason}</p>
+    </> : <>
     <div className="flex flex-wrap items-center gap-2"><a className="text-sm font-medium underline" href={item.profile_url} target="_blank" rel="noreferrer">{item.person_name}</a>{item.company && <Chip>{item.company}</Chip>}<Badge>{item.engagement}</Badge></div>
     {item.quote && <blockquote className="text-sm">“{item.quote}”</blockquote>}
     <p className="text-sm"><span className="font-medium">ICP fit: </span>{item.why_fit}</p>
     <p className="text-sm"><span className="font-medium">Outreach context: </span>{item.outreach_context}</p>
+    </>}
     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground"><a className="underline" href={item.source_url} target="_blank" rel="noreferrer">View evidence</a><span>{item.occurred_at ? `Event: ${item.occurred_at}` : "Event date unknown"}</span><span>Observed: {item.observed_at} UTC</span></div>
-    {item.lead_id ? <Link className="text-sm underline" to="/">Added to people</Link> : <Button disabled={busy} onClick={() => { setBusy(true); setError(null); void api.promoteObservation(item.id).then(onChanged).catch(e => setError(e.message)).finally(() => setBusy(false)); }}><Plus size={14} />Add to people</Button>}
+    {!("kind" in item && item.subject.type === "company") && (item.lead_id ? <Link className="text-sm underline" to="/">Added to people</Link> : <Button disabled={busy} onClick={() => { setBusy(true); setError(null); void api.promoteObservation(item.id).then(onChanged).catch(e => setError(e.message)).finally(() => setBusy(false)); }}><Plus size={14} />Add to people</Button>)}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </article>;
 }
@@ -210,8 +216,8 @@ export function MonitorFindings() {
     catch (e) { setError((e as Error).message); }
   }, [page]);
   useEffect(() => { void load(); const timer = setInterval(() => void load(), 15000); return () => clearInterval(timer); }, [load]);
-  return <section aria-label="Engagement findings"><h2 className="card-title">Engagement findings <span className="text-muted-foreground">{total}</span></h2>
-    {error ? <p role="alert" className="mt-2 text-sm text-destructive">{error}</p> : items.length === 0 ? <Empty title="Your next conversation starts here" hint="Start a monitor above. Qualified engagement appears here with evidence and a reason to reach out; baseline-only findings stay out of the feed." /> : items.map(item => <Finding key={item.id} item={item} onChanged={() => void load()} />)}
+  return <section aria-label="Signal findings"><h2 className="card-title">Signal findings <span className="text-muted-foreground">{total}</span></h2>
+    {error ? <p role="alert" className="mt-2 text-sm text-destructive">{error}</p> : items.length === 0 ? <Empty title="Your next conversation starts here" hint="Start a monitor above. Person and company signals appear here with evidence and a reason; baseline-only findings stay out of the feed." /> : items.map(item => <Finding key={item.id} item={item} onChanged={() => void load()} />)}
     <Pager page={page} total={total} onPage={setPage} />
   </section>;
 }

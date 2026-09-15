@@ -1,7 +1,7 @@
 import { createApp, createRoute, z } from "@clawnify/app";
 import { createAgents, ClawnifyAgentsError, type AgentsEnv } from "@clawnify/agents";
 import { get, query, run } from "./db.js";
-import { MonitorInput, ObservationInput, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
+import { MonitorInput, SignalObservationInput, linkedinUrl, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
 import { normalizeDomain, normalizeUrl } from "./signals.js";
 import { signalBrief } from "./signal-brief.js";
 
@@ -66,10 +66,13 @@ async function begin(row: MonitorRow, id: string, env: AgentsEnv) {
   return { check: inserted, created: true };
 }
 
-export async function observationFingerprint(v: z.infer<typeof ObservationInput>) {
+export async function observationFingerprint(v: z.infer<typeof SignalObservationInput>) {
   const source = new URL(v.source_url);
   const comment = source.searchParams.get("commentUrn") ?? source.searchParams.get("replyUrn");
-  const identity = [normalizeUrl(v.profile_url), normalizeUrl(v.post_url), v.engagement,
+  // Custom findings are one subject per evidence URL. Agent prose is not an ID.
+  const identity = "kind" in v ? ["custom", v.subject.type,
+    v.subject.type === "company" ? normalizeDomain(v.subject.domain) : normalizeUrl(v.subject.profile_url),
+    normalizeUrl(v.source_url)] : [normalizeUrl(v.profile_url), normalizeUrl(v.post_url), v.engagement,
     ["comment", "mention"].includes(v.engagement) ? (comment || v.quote.trim().replace(/\s+/g, " ")) : ""];
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(identity)));
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -118,7 +121,7 @@ monitorRoutes.post("/api/monitors", async c => {
       const result = await createAgents(c.env).schedules.create(cfg.server_id, {
         name: `OpenProspector: ${cfg.name}`,
         trigger: { kind: "every", every_ms: INTERVAL[cfg.frequency] },
-        text: signalBrief(new URL(c.req.url).origin, id),
+        text: signalBrief(new URL(c.req.url).origin, id, undefined, cfg.kind),
       }, { idempotencyKey: `openprospector-monitor:${id}` });
       await run("UPDATE signal_monitors SET schedule_id = ?, schedule_error = NULL WHERE id = ?", [result.schedule.id, id]);
       // A user may have paused while create was in flight. Do not revive the
@@ -161,7 +164,7 @@ monitorRoutes.post("/api/monitors/:id/run", async c => {
   try {
     await createAgents(c.env).dispatch({
       server_id: config(row).server_id, idempotency_key: `monitor-check:${id}`,
-      instruction: signalBrief(new URL(c.req.url).origin, row.id, id),
+      instruction: signalBrief(new URL(c.req.url).origin, row.id, id, config(row).kind),
     });
   } catch (e) {
     const unknown = !(e instanceof ClawnifyAgentsError) || e.outcomeUnknown;
@@ -198,7 +201,7 @@ monitorRoutes.openapi(createRoute({ method: "get", path: "/api/monitors/{id}", t
   summary: "Read a monitor's current settings before researching", request: { params: IdParam }, responses: { 200: MonitorResponse } }),
   async c => c.json({ monitor: await present(await readMonitor(c.req.param("id"))) }, 200));
 monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitors/{id}/checks", tags: ["Monitoring"],
-  summary: "Claim a scheduled check before opening LinkedIn; 409/410 means stop", request: { params: IdParam,
+  summary: "Claim a scheduled check before researching; 409/410 means stop", request: { params: IdParam,
     body: { content: { "application/json": { schema: z.object({ id: UUID }).strict() } } } }, responses: { 200: BeginResponse } }),
   async c => c.json(await begin(await readMonitor(c.req.param("id")), c.req.valid("json").id, c.env), 200));
 monitorRoutes.openapi(createRoute({ method: "get", path: "/api/monitor-checks/{id}", tags: ["Monitoring"],
@@ -217,14 +220,20 @@ monitorRoutes.openapi(createRoute({ method: "patch", path: "/api/monitor-checks/
     return c.json({ check: await readCheck(check.id) }, 200);
   });
 monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{id}/observations", tags: ["Monitoring"],
-  summary: "Record qualifying engagements; repeats and baseline are handled atomically", request: { params: IdParam,
-    body: { content: { "application/json": { schema: z.object({ observations: z.array(ObservationInput).min(1).max(25) }).strict() } } } }, responses: { 200: ObservationsResponse } }),
+  summary: "Record person/company findings; repeats and baseline are handled atomically. Custom monitors also accept legacy LinkedIn observations.", request: { params: IdParam,
+    body: { content: { "application/json": { schema: z.object({ observations: z.array(SignalObservationInput).min(1).max(25) }).strict() } } } }, responses: { 200: ObservationsResponse } }),
   async c => {
     const check = await readCheck(c.req.param("id"));
-    await checkAllowed(await readMonitor(check.monitor_id), c.env);
+    const monitor = await readMonitor(check.monitor_id);
+    await checkAllowed(monitor, c.env);
     if (check.status !== "sourcing") throw new InputError("Check is not running", 409);
+    const observations = c.req.valid("json").observations;
+    if (config(monitor).kind !== "custom" && observations.some(v => "kind" in v))
+      throw new InputError("LinkedIn templates require LinkedIn engagement observations.");
+    // Accept the old LinkedIn shape on custom monitors: already-running tasks
+    // and native schedules may still carry the previously attached snapshot.
     let recorded = 0;
-    for (const observation of c.req.valid("json").observations) {
+    for (const observation of observations) {
       const fingerprint = await observationFingerprint(observation);
       const inserted = await get<{ id: string }>(
         `INSERT INTO signal_observations(id, monitor_id, check_id, fingerprint, details, visible)
@@ -246,15 +255,20 @@ monitorRoutes.get("/api/monitor-observations", async c => {
 monitorRoutes.post("/api/monitor-observations/:id/lead", async c => {
   const row = await get<ObservationRow>("SELECT * FROM signal_observations WHERE id = ? AND visible = 1", [UUID.parse(c.req.param("id"))]);
   if (!row) throw new InputError("Finding not found", 404);
-  const data = ObservationInput.parse(JSON.parse(row.details));
-  const profile = normalizeUrl(data.profile_url);
-  const existing = await get<{ id: string }>("SELECT id FROM leads WHERE linkedin_url = ? LIMIT 1", [profile]);
+  const data = SignalObservationInput.parse(JSON.parse(row.details));
+  if ("kind" in data && data.subject.type === "company") throw new InputError("Company findings cannot be added to people.");
+  const person = "kind" in data && data.subject.type === "person" ? data.subject : null;
+  const profile = normalizeUrl("kind" in data ? person!.profile_url : data.profile_url);
+  const isLinkedin = linkedinUrl(profile, "profile");
+  const existing = isLinkedin ? await get<{ id: string }>("SELECT id FROM leads WHERE linkedin_url = ? LIMIT 1", [profile]) : null;
   // Deterministic ID makes simultaneous promotion of one person idempotent.
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(profile));
-  const leadId = existing?.id ?? `linkedin-${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("")}`;
+  const leadId = existing?.id ?? `${isLinkedin ? "linkedin" : "person"}-${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("")}`;
   await run(`INSERT INTO leads(id, full_name, linkedin_url, company, domain, source, source_url, evidence)
-    VALUES (?, ?, ?, ?, ?, 'linkedin', ?, ?) ON CONFLICT(id) DO NOTHING`,
-    [leadId, data.person_name, profile, data.company, normalizeDomain(data.domain), data.source_url,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+    "kind" in data ? [leadId, person!.name, isLinkedin ? profile : "", "", "", "custom", data.source_url,
+      `Profile: ${person!.profile_url}\n${data.summary}\nSignal reason: ${data.reason}`] :
+    [leadId, data.person_name, profile, data.company, normalizeDomain(data.domain), "linkedin", data.source_url,
       `${data.engagement}: ${data.quote}\nICP fit: ${data.why_fit}\nContext: ${data.outreach_context}`]);
   await run("UPDATE signal_observations SET lead_id = ? WHERE id = ?", [leadId, row.id]);
   return c.json({ lead_id: leadId });
