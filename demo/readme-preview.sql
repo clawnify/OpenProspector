@@ -1,0 +1,41 @@
+-- Fictional records for the README cover capture. Load into an empty local
+-- database only (see the internal README generation guide). Every company,
+-- person and address is invented and uses a reserved .example domain.
+-- Attributions name shipped adapters only.
+
+INSERT INTO runs (id, icp_prompt, status, lead_count, credits_spent, error, created_at, updated_at) VALUES
+ ('0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c01', 'Operations leads at logistics firms in Rotterdam that just opened a second warehouse', 'sourcing', 0, 0, '', datetime('now', '-4 minutes'), datetime('now', '-1 minutes')),
+ ('0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Heads of growth at B2B software companies in Berlin hiring their first SDRs', 'done', 12, 10, '', datetime('now', '-2 hours'), datetime('now', '-100 minutes')),
+ ('0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c03', 'Dental clinic owners in Lisbon offering online booking', 'failed', 0, 0, 'No clinic in this segment lists an owner publicly', datetime('now', '-1 days'), datetime('now', '-1 days'));
+
+INSERT INTO leads (id, run_id, full_name, title, company, domain, location, source, source_url, evidence, email, email_verified, email_provider, enrich_status, created_at) VALUES
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e01', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Maya Okafor', 'Head of Growth', 'Lumen Ledger', 'lumenledger.example', 'Berlin, DE', 'job-board', 'https://lumenledger.example/careers/sdr', 'Posted two SDR roles on 8 September', 'maya.okafor@lumenledger.example', 1, 'findymail', 'done', datetime('now', '-99 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e02', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Jonas Weber', 'VP Marketing', 'Parcelwise', 'parcelwise.example', 'Berlin, DE', 'funding-news', 'https://parcelwise.example/news/series-a', 'Closed a Series A and is building an outbound team', 'jonas@parcelwise.example', 1, 'leadmagic', 'done', datetime('now', '-100 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e03', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Priya Raman', 'Growth Lead', 'Tallyhouse', 'tallyhouse.example', 'Berlin, DE', 'job-board', 'https://tallyhouse.example/jobs', 'First sales development role opened this month', 'priya.raman@tallyhouse.example', 1, 'findymail', 'done', datetime('now', '-101 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e04', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Lukas Brandt', 'Director of Demand Gen', 'Northwind Metrics', 'northwindmetrics.example', 'Berlin, DE', 'company-blog', 'https://northwindmetrics.example/blog/team', 'Announced a new outbound team in a blog post', 'l.brandt@northwindmetrics.example', 1, 'prospeo', 'done', datetime('now', '-102 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e05', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Sofia Lindqvist', 'Head of Revenue', 'Brightloop', 'brightloop.example', 'Berlin, DE', 'job-board', 'https://brightloop.example/careers', 'Hiring an SDR team lead', 'sofia@brightloop.example', 1, 'hunter', 'done', datetime('now', '-103 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e06', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Daniel Osei', 'Growth Manager', 'Quillstack', 'quillstack.example', 'Berlin, DE', 'press-release', 'https://quillstack.example/press', 'Named a new growth manager on 2 September', '', 0, '', 'done', datetime('now', '-104 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e07', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Elena Marquez', 'CMO', 'Fernway Software', 'fernway.example', 'Berlin, DE', 'job-board', 'https://fernway.example/jobs/sdr', 'Three SDR vacancies posted in two weeks', 'elena.marquez@fernway.example', 1, 'anymailfinder', 'done', datetime('now', '-105 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e08', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Tom Heller', 'Head of Sales Development', 'Crestline Data', 'crestline.example', 'Berlin, DE', 'funding-news', 'https://crestline.example/news', 'Raised a seed extension to grow sales', '', 0, '', 'waiting', datetime('now', '-106 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e09', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Aisha Karimi', 'Growth Lead', 'Orbitdesk', 'orbitdesk.example', 'Berlin, DE', 'job-board', 'https://orbitdesk.example/careers', 'First outbound hire listed on the careers page', 'aisha.karimi@orbitdesk.example', 1, 'leadmagic', 'done', datetime('now', '-107 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e10', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Marco Bellini', 'VP Growth', 'Harbor Analytics', 'harboranalytics.example', 'Berlin, DE', 'company-blog', 'https://harboranalytics.example/blog', 'Wrote about building an outbound motion', 'marco@harboranalytics.example', 1, 'findymail', 'done', datetime('now', '-108 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e11', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Hannah Vogel', 'Marketing Director', 'Pinecrest Labs', 'pinecrest.example', 'Berlin, DE', 'job-board', 'https://pinecrest.example/jobs', 'SDR role reposted for the third time', '', 0, '', 'pending', datetime('now', '-109 minutes')),
+ ('7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e12', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'Ravi Menon', 'Head of Growth', 'Stackfield Cloud', 'stackfield.example', 'Berlin, DE', 'press-release', 'https://stackfield.example/press', 'Opened a Berlin sales office', '', 0, '', 'pending', datetime('now', '-110 minutes'));
+
+INSERT INTO enrichment_attempts (id, lead_id, run_id, provider_id, field, outcome, credits_used, ms, detail) VALUES
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f01', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e01', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'findymail', 'email', 'hit', 1, 412, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f02', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e02', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'findymail', 'email', 'miss', 1, 388, 'No record found'),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f03', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e02', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'leadmagic', 'email', 'hit', 1, 506, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f04', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e03', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'findymail', 'email', 'hit', 1, 397, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f05', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e04', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'findymail', 'email', 'miss', 1, 402, 'No record found'),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f06', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e04', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'prospeo', 'email', 'hit', 1, 611, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f07', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e05', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'hunter', 'email', 'hit', 1, 455, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f08', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e06', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'anymailfinder', 'email', 'miss', 0, 520, 'No valid address'),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f09', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e07', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'anymailfinder', 'email', 'hit', 1, 540, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f10', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e09', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'leadmagic', 'email', 'hit', 1, 478, ''),
+ ('9a3b6c10-2d4e-4f50-8a61-7b8c9d0e1f11', '7c1e0a52-1b3d-4f6a-8e2c-5d9b0a1f3e10', '0f5d2c1e-6a41-4c7e-9b1a-3e8f0d2a7c02', 'findymail', 'email', 'hit', 1, 391, '');
+
+INSERT INTO signals (id, domain, company, type, summary, source, source_url, occurred_at, seen_count, dedupe_key) VALUES
+ ('5e2f7a90-3c1b-4d8e-9f0a-1b2c3d4e5f01', 'pinecrest.example', 'Pinecrest Labs', 'hiring', 'SDR role reposted for the third time', 'Company careers page', 'https://pinecrest.example/jobs', datetime('now', '-3 days'), 3, 'pinecrest.example|hiring|https://pinecrest.example/jobs'),
+ ('5e2f7a90-3c1b-4d8e-9f0a-1b2c3d4e5f02', 'pinecrest.example', 'Pinecrest Labs', 'funding', 'Announced a seed round led by a regional fund', 'Company news page', 'https://pinecrest.example/news/seed', datetime('now', '-9 days'), 1, 'pinecrest.example|funding|https://pinecrest.example/news/seed'),
+ ('5e2f7a90-3c1b-4d8e-9f0a-1b2c3d4e5f03', 'stackfield.example', 'Stackfield Cloud', 'site_change', 'New page describing a Berlin sales office', 'Company website', 'https://stackfield.example/offices/berlin', datetime('now', '-2 days'), 1, 'stackfield.example|site_change|https://stackfield.example/offices/berlin');

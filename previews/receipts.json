@@ -1,0 +1,26 @@
+{
+  "sourcing": {
+    "composition": "64b2dd73daf7ff10cd67f7fab9240047518f33a2df84f38c37c2cd07ffc91319",
+    "png": "c980c76ebfb91e79f148a8d33f17346f8677564cd6c227fc9eb642a479040732"
+  },
+  "waterfall": {
+    "composition": "6eb190bfe090278855dcda6bf4ae1e45a746fe09c81111d1451f1676c982e2b2",
+    "png": "766582a68954983059c38aa563f87cd8d4ea3511506502ad94cb2a4f0b6f7f39"
+  },
+  "attribution": {
+    "composition": "5e686a69e22a24a11c123ab9f0e32d3d9fb9da0bb12c472b2c5d587c08ca6180",
+    "png": "f7d857db090de16269b2cfa1df16c31260b59b11916014ecaf0e6b0b408fe538"
+  },
+  "signals": {
+    "composition": "4d349d6814487be601a3bf7ce0055e7b4fcbdbd0023f7dcf28213ceb30d4639c",
+    "png": "5e8d2c59341c0406a90357824046b9231ee7c1afe8233a7df1caa65f12c77659"
+  },
+  "cover-light": {
+    "composition": "de18e69d9aafafee6b93c8948a345a1cfbd0418c0de8685e8a0b3b42a73d1bb1",
+    "png": "8587b1bc9c4c9f1340c59fe024883e9f99341e4aa49262b045cdbe408128c47a"
+  },
+  "cover-dark": {
+    "composition": "73dd647d47051e67208d31a1d49a04117bdc83c2e4a88fc7d901283b9ce936a4",
+    "png": "fa6b67e1c091499980eb0867803c35ce7d2af41f130860956ac936ccc6589a5f"
+  }
+}
