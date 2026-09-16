@@ -355,6 +355,18 @@ export async function runWaterfall(
     totalCredits += result.creditsUsed;
     attempts.push({ providerId: id, field, outcome: result.outcome, creditsUsed: result.creditsUsed, ms, detail: result.detail });
 
+    // A vendor can answer `hit` and carry nothing — settle() below refuses to
+    // use it, but the row above already called it a hit, so the user sees a
+    // charge against a success that produced no value. Name it instead.
+    if (result.outcome === "hit" && !result.value) {
+      attempts[attempts.length - 1] = {
+        ...attempts[attempts.length - 1],
+        outcome: "unmapped",
+        detail: `${provider.label} returned a ${field} hit with no value — the adapter's response mapping is probably out of date`,
+      };
+      continue;
+    }
+
     if (result.outcome === "pending") {
       // Only a vendor declared deferred may pause the search — anything else
       // answering `pending` is a bug in the adapter, and treating it as a pause

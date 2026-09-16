@@ -9,8 +9,8 @@
 // fields are asked for separately so a phone lookup never spends an email
 // credit on an address the waterfall already has.
 
-import type { CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement, LeadInput } from "./types";
-import { ineligible, miss, nameParts, pollUntil, statusOutcome, vendorFetch } from "./vendor";
+import type { CompanyProvider, CompanyResult, CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement, LeadInput } from "./types";
+import { absoluteLinkedIn, ineligible, miss, nameParts, pollUntil, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.surfe.com";
 
@@ -142,3 +142,101 @@ function readPhone(p: Person): EnrichResult {
     detail: typeof pick.confidenceScore === "number" ? `Surfe confidence ${pick.confidenceScore}` : undefined,
   };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against
+// https://developers.surfe.com/public-014-get-bulk-enrichment-organizations on
+// 2026-09-03, and the endpoint probed live (401 on a bad key):
+//   POST /v2/companies/enrich          { companies: [{ domain }] }
+//        -> { enrichmentID }
+//   GET  /v2/companies/enrich/{id}
+//        -> { companies: [{ name, websites[], linkedInURL, industry,
+//                           employeeCount, founded, hqAddress, hqCountry,
+//                           stocks: [{ exchange, ticker }] }],
+//             status: "IN_PROGRESS" | "COMPLETED", percentCompleted }
+//   Auth: Authorization: Bearer <key>   (same key as the person adapter)
+//
+// Same async shape as the person lookup, so it is polled in band by the same
+// helper on the same 25 s cap rather than pausing the lead.
+//
+// **`hqAddress` is one free-text line, not a structured city.** It is
+// deliberately not split into city / state / postal code: a comma-splitter over
+// an international address is a guess, and a wrong city in a LinkedIn upload is
+// worse than an empty one. Only `hqCountry`, which is structured, is mapped —
+// hence no "city" in `covers`, which is what tells the runner to keep going to
+// a vendor that does have one.
+//
+// `founded` is a string here (not the number it is at every other vendor), so
+// it is parsed rather than assigned.
+
+interface EnrichedCompany {
+  name?: string | null;
+  linkedInURL?: string | null;
+  industry?: string | null;
+  employeeCount?: number | null;
+  founded?: string | number | null;
+  hqCountry?: string | null;
+  stocks?: { ticker?: string | null }[] | null;
+}
+
+interface CompanyEnrichment {
+  enrichmentID?: string;
+  status?: string;
+  companies?: EnrichedCompany[];
+}
+
+export const SurfeCompanyProvider: CompanyProvider = {
+  id: "surfe-company",
+  label: "Surfe",
+  secretName: "SURFE_API_KEY",
+  signupUrl: "https://www.surfe.com/pricing",
+  // No city, state or postal code — see the note on hqAddress above.
+  covers: ["name", "linkedinUrl", "industry", "country", "stockSymbol", "employeeCount", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const started = await call("/v2/companies/enrich", apiKey, { companies: [{ domain }] });
+    if (started.status < 200 || started.status >= 300) {
+      const { outcome, detail } = outcomeFor(started.status);
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+    const id = (started.body as CompanyEnrichment | null)?.enrichmentID;
+    if (!id) return { outcome: "error", data: null, creditsUsed: 0, detail: "Surfe accepted the enrichment but returned no enrichmentID" };
+
+    const finished = await pollUntil<{ status: number; body: CompanyEnrichment | null }>(async () => {
+      const r = await call(`/v2/companies/enrich/${encodeURIComponent(id)}`, apiKey);
+      const e = r.body as CompanyEnrichment | null;
+      if (r.status < 200 || r.status >= 300) return { done: true, value: { status: r.status, body: e } };
+      const done = e?.status && e.status !== "IN_PROGRESS";
+      return done ? { done: true, value: { status: r.status, body: e } } : { done: false };
+    });
+
+    if (!finished) {
+      return { outcome: "error", data: null, creditsUsed: 0, detail: `Surfe enrichment ${id} still running after 25s — retrieve it at /v2/companies/enrich/${id}` };
+    }
+    if (finished.status < 200 || finished.status >= 300) {
+      const { outcome, detail } = outcomeFor(finished.status);
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const c = finished.body?.companies?.[0];
+    if (!c?.name) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    const founded = Number(c.founded);
+    return {
+      outcome: "hit",
+      // Surfe does not report a per-record cost; results are documented as
+      // counting against the company enrichment quota, so one is recorded.
+      creditsUsed: 1,
+      data: {
+        name: c.name || undefined,
+        industry: c.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(c.linkedInURL),
+        stockSymbol: c.stocks?.[0]?.ticker || undefined,
+        employeeCount: typeof c.employeeCount === "number" ? c.employeeCount : undefined,
+        foundedYear: Number.isInteger(founded) && founded > 1600 && founded < 2200 ? founded : undefined,
+        country: c.hqCountry || undefined,
+      },
+    };
+  },
+};

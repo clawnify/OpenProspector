@@ -16,6 +16,8 @@
 // adapter polls to completion inside `find()`.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   CreditBalance,
   EnrichField,
   EnrichProvider,
@@ -23,7 +25,7 @@ import type {
   InputRequirement,
   LeadInput,
 } from "./types";
-import { IDENTIFIED_PERSON, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { IDENTIFIED_PERSON, absoluteLinkedIn, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://wiza.co/api";
 
@@ -201,3 +203,98 @@ function readPhone(data: RevealData, creditsUsed: number): EnrichResult {
   if (!value) return miss("No phone number found", creditsUsed);
   return { outcome: "hit", value, verified: true, creditsUsed };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract captured from a LIVE response on 2026-09-03 (a real key, against
+// `stripe.com`), not transcribed from the docs — Wiza's reference lists the
+// fields but not the envelope, and the envelope is where the mistakes are:
+//   POST /api/company_enrichments   { company_domain }
+//        -> { status: { code, message }, type: "company_enrichment",
+//             data: { company_name, company_industry, company_size,
+//                     company_size_range, company_founded, company_ticker,
+//                     company_linkedin, company_locality, company_region,
+//                     company_postal_code, company_country,
+//                     credits: { api_credits: { company_credits, total } } } }
+//   404 -> no match. Documented as billing on a match only, so that costs zero.
+//   Auth: Authorization: Bearer <key>   (same key as the person adapter)
+//
+// The widest coverage in the registry: every CompanyRecord field, ticker and
+// postal code included, which is why it leads the default company order for
+// anyone holding the key.
+//
+// Two things the live response settled that the docs did not:
+//   * `company_size` is an integer and `company_size_range` the bucketed
+//     string. Reading the range into employeeCount would put "5001-10000" in an
+//     INTEGER column.
+//   * Wiza lower-cases the tail of its geography: "South san francisco",
+//     "United states". Passed through as-is rather than title-cased here,
+//     because a title-caser that has to know about "N.V." and "GmbH" is a
+//     bigger liability than the casing, and LinkedIn matches an account on
+//     name, website and email domain — never on the city string.
+
+interface CompanyEnrichmentData {
+  company_name?: string | null;
+  company_industry?: string | null;
+  company_linkedin?: string | null;
+  company_ticker?: string | null;
+  company_size?: number | null;
+  company_founded?: number | null;
+  company_locality?: string | null;
+  company_region?: string | null;
+  company_postal_code?: string | null;
+  company_country?: string | null;
+  credits?: { api_credits?: { total?: number } } | null;
+}
+
+export const WizaCompanyProvider: CompanyProvider = {
+  id: "wiza-company",
+  label: "Wiza",
+  secretName: "WIZA_API_KEY",
+  signupUrl: "https://wiza.co/pricing",
+  covers: [
+    "name",
+    "linkedinUrl",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "postalCode",
+    "stockSymbol",
+    "employeeCount",
+    "foundedYear",
+  ],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await call("/company_enrichments", apiKey, { company_domain: domain });
+
+    if (status === 404) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "Wiza");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const d = (body as { data?: CompanyEnrichmentData } | null)?.data;
+    if (!d) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    return {
+      outcome: "hit",
+      // What Wiza says it charged, not what we assume — the same rule the
+      // person adapter follows, and the reason the ledger stays true when a
+      // vendor changes its price.
+      creditsUsed: d.credits?.api_credits?.total ?? 2,
+      data: {
+        name: d.company_name || undefined,
+        industry: d.company_industry || undefined,
+        linkedinUrl: absoluteLinkedIn(d.company_linkedin),
+        stockSymbol: d.company_ticker || undefined,
+        employeeCount: typeof d.company_size === "number" ? d.company_size : undefined,
+        foundedYear: d.company_founded ?? undefined,
+        city: d.company_locality || undefined,
+        state: d.company_region || undefined,
+        country: d.company_country || undefined,
+        postalCode: d.company_postal_code || undefined,
+      },
+    };
+  },
+};

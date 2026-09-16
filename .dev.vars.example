@@ -1,6 +1,12 @@
 # Copy to .dev.vars and fill in. Never commit .dev.vars.
 # Each provider is optional — the waterfall skips any vendor with no key and
 # records "unconfigured" in the attempt ledger so you can see the gap.
+#
+# One key per vendor, entered once, serves every waterfall it can. Fourteen of
+# these vendors also resolve the COMPANY behind a lead (industry, HQ, LinkedIn
+# page, ticker) from the same key — see "Company waterfall" in the README.
+# Five have no company API at all: Skrapp, Anymail Finder, Zeliq, Dropcontact
+# and Kaspr.
 
 FINDYMAIL_API_KEY=
 LEADMAGIC_API_KEY=
@@ -35,10 +41,14 @@ SNOV_API_KEY=clientId:clientSecret
 #              separately under Settings → API.
 #   LeadMagic — no API access on the free tier at all; a key can only be minted
 #              on an active paid plan.
-#   Apollo   — the key works on the free plan. Phone numbers are delivered to
+#   Apollo   — the key works on the free plan, for companies as well as people,
+#              which makes it the one company vendor you can try for nothing. Phone numbers are delivered to
 #              a webhook minutes later, so the phone field pauses the lead
 #              until Apollo calls back (see README, "Vendors that answer later").
-#   Snov.io  — no API access on the Trial plan; Starter and up.
+#   Snov.io  — no API access on the Trial plan; Starter and up. Its company
+#              lookup bills per REQUEST rather than per match, so a domain it
+#              cannot resolve still costs a credit — which is why it is last in
+#              the default company order.
 #   Surfe    — the API is listed on the Enterprise plan only.
 #   Kaspr    — API access from the Starter plan; the free plan is "limited".
 #   Dropcontact, Zeliq — answer by callback only. They cannot deliver to a

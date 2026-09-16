@@ -18,13 +18,15 @@
 // just resolved. Without that, this adapter could never run for a fresh lead.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   CreditBalance,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
   LeadInput,
 } from "./types";
-import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { absoluteLinkedIn, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.leadmagic.io/v1";
 
@@ -121,3 +123,81 @@ async function findMobile(input: LeadInput, apiKey: string): Promise<EnrichResul
   // a number it already has.
   return { outcome: "hit", value: b.mobile_number, verified: true, creditsUsed: charged(body, 5) };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://leadmagic.io/docs/api-reference/ on
+// 2026-09-03, and the endpoint probed live (401 on a bad key):
+//   POST /v1/companies/company-search  { company_domain }
+//        -> { companyName, industry, employeeCount, employeeRange, founded,
+//             headquarters: { city, state, country }, b2b_profile_url }
+//   Auth: X-API-Key: <key>   (same key as the person adapter)
+//
+// One credit when a company is found, nothing when none is — so an attempt that
+// misses is free, which is what puts LeadMagic high in the default order.
+//
+// The mapping trap: **the LinkedIn company page is `b2b_profile_url`.** There
+// is no `linkedin_url` in this response, and an adapter that reads one finds
+// undefined and ships the column blank. LeadMagic names it generically across
+// its whole API; the value is the company's LinkedIn page.
+//
+// No ticker and no postal code in the documented response, so neither is
+// claimed. `employeeCount` is the integer and `employeeRange` the bucket; only
+// the integer is read, because the column is an INTEGER.
+//
+// Chosen over the v3 aliases (`/v3/companies/enrich`, `/v3/companies/lookup`,
+// `/v3/companies/domain-lookup`) deliberately: LeadMagic's own docs call the V1
+// endpoint "the simpler choice" for a single domain, and every v3 alias is
+// documented as a metered call while this one is unmetered on the eligible
+// plans. Same data, same key, lower bill.
+
+interface CompanyBody {
+  companyName?: string | null;
+  industry?: string | null;
+  employeeCount?: number | null;
+  founded?: number | null;
+  b2b_profile_url?: string | null;
+  headquarters?: { city?: string | null; state?: string | null; country?: string | null } | null;
+}
+
+export const LeadMagicCompanyProvider: CompanyProvider = {
+  id: "leadmagic-company",
+  label: "LeadMagic",
+  secretName: "LEADMAGIC_API_KEY",
+  signupUrl: "https://leadmagic.io/pricing",
+  covers: ["name", "linkedinUrl", "industry", "city", "state", "country", "employeeCount", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await call("/companies/company-search", apiKey, { company_domain: domain });
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "LeadMagic");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const c = (body ?? {}) as CompanyBody;
+    // "Company not found" comes back as a 200 with no company fields, and it is
+    // documented as free — so it must not be recorded as a paid hit.
+    if (!c.companyName && !c.industry && !c.b2b_profile_url) {
+      return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+    }
+
+    const hq = c.headquarters ?? {};
+    return {
+      outcome: "hit",
+      // Documented: 1 credit if found, free if not. `credits_consumed` is not
+      // echoed on this endpoint the way it is on the person ones.
+      creditsUsed: charged(body, 1),
+      data: {
+        name: c.companyName || undefined,
+        industry: c.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(c.b2b_profile_url),
+        employeeCount: c.employeeCount ?? undefined,
+        foundedYear: c.founded ?? undefined,
+        city: hq.city || undefined,
+        state: hq.state || undefined,
+        country: hq.country || undefined,
+      },
+    };
+  },
+};

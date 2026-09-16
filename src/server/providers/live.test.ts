@@ -25,8 +25,9 @@
 // that fails for someone else's outage stops being read.
 
 import { describe, expect, it } from "vitest";
+import { COMPANY_REGISTRY } from "./company";
 import { REGISTRY } from "./index";
-import type { EnrichField, EnrichProvider } from "./types";
+import type { CompanyProvider, EnrichField, EnrichProvider } from "./types";
 
 const LEAD = {
   fullName: "Ada Lovelace",
@@ -39,7 +40,7 @@ const LEAD = {
 };
 
 /** Compound-secret vendors still need a well-formed value to get past their own parsing. */
-function bogusKey(p: EnrichProvider): string {
+function bogusKey(p: EnrichProvider | CompanyProvider): string {
   return p.keyFormat ? "bogus-id:bogus-key" : "bogus-key-that-is-not-real";
 }
 
@@ -84,5 +85,29 @@ suite("live vendor reachability", () => {
         30_000,
       );
     }
+  }
+});
+
+// The company adapters get the same treatment, and for the same reason: their
+// endpoints are a different host/path/version from the person ones at the very
+// same vendors, so a working person adapter proves nothing about them.
+suite("live company vendor reachability", () => {
+  for (const provider of COMPANY_REGISTRY) {
+    it(
+      `${provider.id} reaches its company endpoint and rejects a bad key`,
+      async () => {
+        let r: Awaited<ReturnType<typeof provider.enrich>>;
+        try {
+          r = await provider.enrich("stripe.com", bogusKey(provider));
+        } catch (err) {
+          throw new Error(
+            `${provider.id}: endpoint unreachable (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+        expect(r.outcome, `${provider.id}: ${r.detail ?? "no detail"}`).toBe("unconfigured");
+        expect(r.creditsUsed, `${provider.id} spent credits on a rejected key`).toBe(0);
+      },
+      30_000,
+    );
   }
 });

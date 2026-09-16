@@ -11,7 +11,8 @@
 import { enqueueJob, type QueueEnv } from "@clawnify/queue";
 import type { ConnectionsEnv } from "@clawnify/connections";
 import { get, query, run } from "./db.js";
-import { d1Cache, recordAttempts } from "./cache.js";
+import { d1Cache, d1CompanyStore, recordAttempts } from "./cache.js";
+import { runCompanyWaterfall } from "./providers/company.js";
 import { applyDeferredResult, providerById, runWaterfall } from "./providers/index.js";
 import type { EnrichField, EnrichResult, LeadInput, PendingWaterfall, WaterfallResult } from "./providers/types.js";
 
@@ -58,6 +59,8 @@ export function leadInput(row: Record<string, unknown>): LeadInput {
 
 export interface EnrichOptions {
   orders: Record<EnrichField, string[]>;
+  /** Company waterfall order. Separate from `orders` because it is not per-field. */
+  companyOrder: string[];
   /** Public origin of this deployment, for callback URLs. Null when unknown. */
   origin: string | null;
   refresh?: boolean;
@@ -97,7 +100,7 @@ export async function enrichLead(
     fold(outcome, step);
     if (step.status === "waiting") return outcome;
   }
-  await finishLead(row, outcome);
+  await finishLead(row, outcome, env, opts);
   return outcome;
 }
 
@@ -145,7 +148,7 @@ export async function resumeLead(token: string, answer: EnrichResult, env: Enric
     // enrichLead finishes the lead itself; only the last field falls through.
     await enrichLead(row, env, opts, next);
   } else {
-    await finishLead(row, outcome);
+    await finishLead(row, outcome, env, opts);
   }
   return true;
 }
@@ -257,10 +260,47 @@ async function settleField(
   return { status: "done", credits, cached: res.cached };
 }
 
-async function finishLead(row: Record<string, unknown>, outcome: EnrichOutcome): Promise<void> {
+async function finishLead(
+  row: Record<string, unknown>,
+  outcome: EnrichOutcome,
+  env: EnrichEnv,
+  opts: EnrichOptions,
+): Promise<void> {
+  await enrichCompany(row, outcome, env, opts);
   await run("UPDATE leads SET enrich_status = 'done', updated_at = datetime('now') WHERE id = ?", [String(row.id)]);
   outcome.status = "done";
   await finishRunIfDrained(row.run_id ? String(row.run_id) : null);
+}
+
+/**
+ * Resolve the lead's employer, once the person themselves is settled.
+ *
+ * Hung off finishLead rather than the field loop because that is the one place
+ * a lead is *actually* done — reached both by a straight run and by a resume
+ * after a callback — so a paused lead's company is enriched exactly once, when
+ * it lands, rather than on every pass through the loop.
+ *
+ * Per lead rather than per distinct domain, which is safe because the batch job
+ * enriches leads sequentially and the store write lands before the next lead
+ * starts: the second lead at the same company reads the row instead of buying
+ * it again. The attempt log records the company row against the lead that paid
+ * for it, so the run's credit total stays the sum of one ledger.
+ */
+async function enrichCompany(
+  row: Record<string, unknown>,
+  outcome: EnrichOutcome,
+  env: EnrichEnv,
+  opts: EnrichOptions,
+): Promise<void> {
+  if (opts.companyOrder.length === 0) return;
+  const res = await runCompanyWaterfall(String(row.domain || ""), env, {
+    order: opts.companyOrder,
+    store: d1CompanyStore,
+    refresh: opts.refresh,
+  });
+  if (res.attempts.length === 0) return;
+  await recordAttempts(String(row.id), row.run_id ? String(row.run_id) : null, res.attempts);
+  outcome.credits += res.attempts.reduce((n, a) => n + a.creditsUsed, 0);
 }
 
 /**
