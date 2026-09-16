@@ -2,7 +2,7 @@
 // nothing for minutes — the agent works in an isolated session with
 // deliver:false, so the app is the only place progress can surface.
 
-import { AlertTriangle, Check, Loader2, Search, X } from "lucide-react";
+import { AlertTriangle, Check, Compass, Loader2, Search, X } from "lucide-react";
 import { Badge, Card, CardTitle, Chip, Empty, Zone } from "./ui";
 import type { Run } from "../api";
 
@@ -91,9 +91,19 @@ export function RunsPanel({
             }`}
             title={active ? "Show all leads" : "Show only this search's leads"}
           >
-            <Search size={16} className="shrink-0 text-muted-foreground" />
+            {r.source === "sales_navigator" ? (
+              <Compass size={16} className="shrink-0 text-muted-foreground" aria-hidden />
+            ) : (
+              <Search size={16} className="shrink-0 text-muted-foreground" aria-hidden />
+            )}
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm">{r.icp_prompt}</span>
+              {/* A search URL is unreadable in a row; name the source and keep
+                  the link one hover away. */}
+              <span className="block truncate text-sm" title={r.icp_prompt}>
+                {r.source === "sales_navigator"
+                  ? `Sales Navigator export${r.auto_enrich ? " with emails" : ""}`
+                  : r.icp_prompt}
+              </span>
               {/* A failure the agent explained is worth surfacing inline — the
                   alternative is a red badge with no way to learn why. */}
               {r.error ? <span className="block truncate text-xs text-destructive">{r.error}</span> : null}

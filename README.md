@@ -244,6 +244,15 @@ Progress shows up on the search itself — sourcing, enriching, done — includi
 
 If the app can't reach your agent, it hands you the brief to paste into your agent's chat instead. The search is saved either way, and can be retried.
 
+### Starting from a Sales Navigator list
+
+Already built the list in Sales Navigator? Switch the search card to **Sales Navigator list** and paste a lead search, saved search or lead list. Your agent opens it in its own browser, signed in to your Sales Navigator seat, and exports each person's name, title, location and lead link, plus their company's website, industry, headcount, headquarters and LinkedIn page.
+
+- **Find work emails** runs the email waterfall once the list is in. These exports look up emails only, never phone numbers.
+- Without it, the export uses no credits. The company details come from the list itself, so the LinkedIn company audience export is filled either way.
+- One search exports at most 2,500 people, which is all Sales Navigator pages through. A bigger search is exported up to that and the search says so.
+- The app never calls LinkedIn itself. The agent stops if LinkedIn asks it to sign in, solve a CAPTCHA or slow down. Automated reading of Sales Navigator is against LinkedIn's terms, so keep exports to lists you need, and know that the risk sits with the seat being used.
+
 ## How the Waterfall Works
 
 1. **Cache first.** A normalized `(field, name, domain)` key is checked before any vendor call. A hit costs nothing.
@@ -321,6 +330,7 @@ All list endpoints are paginated (`?page=`, `?limit=`, max 100) and searchable �
 | `GET` | `/api/providers?credits=true` | Registry, configuration state, remaining balances |
 | `PUT` | `/api/waterfall/{field}` | Set provider order for `email` or `phone` |
 | `POST` | `/api/runs` | Start a search from an ICP description |
+| `POST` | `/api/runs/sales-navigator` | Start an export of a Sales Navigator people search or lead list, optionally with work emails |
 | `GET` | `/api/runs`, `/api/runs/{id}` | List runs; one run with live credit spend |
 | `POST` | `/api/runs/{id}/enrich` | Queue enrichment for a run's pending leads |
 | `POST` | `/api/leads` | Import leads (CSV or an existing list) |
