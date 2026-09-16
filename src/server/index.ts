@@ -20,6 +20,7 @@ import {
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { ageDays, dedupeKey, isLive, normalizeDomain, stackCounts } from "./signals.js";
 import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
+import { parseSalesNavigatorUrl, salesNavigatorBrief } from "./sales-navigator.js";
 import { monitorRoutes } from "./monitor-routes.js";
 import type { EnrichField, EnrichResult, LedgerField } from "./providers/types.js";
 
@@ -87,6 +88,9 @@ const RunSchema = z
     id: z.string(),
     icp_prompt: z.string(),
     status: z.string(),
+    source: z.string().openapi({ description: "'icp' (agent researches the web) or 'sales_navigator' (agent exports the Sales Navigator list in icp_prompt)" }),
+    enrich_fields: z.string().openapi({ description: "Comma-separated contact fields this run buys: 'email,phone' or 'email'" }),
+    auto_enrich: z.number().int().openapi({ description: "1 when enrichment starts by itself once the list is in" }),
     lead_count: z.number().int(),
     credits_spent: z.number().int(),
     error: z.string(),
@@ -414,6 +418,47 @@ app.openapi(createRun, async (c) => {
     id,
     c.req.valid("json").icp_prompt,
   ]);
+  const row = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, id]))!;
+  return c.json({ run: row }, 201);
+});
+
+const createSalesNavRun = createRoute({
+  method: "post",
+  path: "/api/runs/sales-navigator",
+  tags: ["Runs"],
+  summary: "Export a Sales Navigator lead search or lead list",
+  description:
+    "Creates a run the agent fills by reading the list in its own browser, signed in to Sales Navigator. Start it with POST /api/runs/{id}/dispatch. At most 2,500 people per search. With include_emails the agent starts email enrichment when the list is in; phone numbers are never bought for this kind of run.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            url: z.string().min(1).openapi({ description: "A Sales Navigator people search, saved search or lead list URL" }),
+            include_emails: z.boolean().default(false).openapi({ description: "Find and verify work emails once the list is exported" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: { description: "Run created", content: { "application/json": { schema: z.object({ run: RunSchema }) } } },
+    400: { description: "Not a Sales Navigator people list", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(createSalesNavRun, async (c) => {
+  const body = c.req.valid("json");
+  const parsed = parseSalesNavigatorUrl(body.url);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const id = crypto.randomUUID();
+  // Emails only, whether or not they are bought now: a later "Enrich" on this
+  // run should extend the export the user chose, not add phone lookups at up to
+  // ten credits each that nobody asked for.
+  await run(
+    "INSERT INTO runs (id, icp_prompt, status, source, enrich_fields, auto_enrich) VALUES (?, ?, 'pending', 'sales_navigator', 'email', ?)",
+    [id, parsed.url, body.include_emails ? 1 : 0],
+  );
   const row = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, id]))!;
   return c.json({ run: row }, 201);
 });
@@ -917,7 +962,11 @@ app.post("/api/runs/:id/dispatch", async (c) => {
   }
   if (row.status === "done") return c.json({ error: "This search has already finished." }, 409);
 
-  const brief = sourcingBrief({ runId, prompt: row.icp_prompt, appUrl: new URL(c.req.url).origin });
+  const appUrl = new URL(c.req.url).origin;
+  const brief =
+    row.source === "sales_navigator"
+      ? salesNavigatorBrief({ runId, url: row.icp_prompt, appUrl, includeEmails: row.auto_enrich === 1 })
+      : sourcingBrief({ runId, prompt: row.icp_prompt, appUrl });
 
   // Idempotency key = run id + the row's current updated_at. A double-click
   // carries the same key (nothing has changed yet) so the platform delivers
@@ -1034,6 +1083,14 @@ const importLeads = createRoute({
                   source: z.string().optional(),
                   source_url: z.string().optional(),
                   evidence: z.string().optional(),
+                  // What the source says about the employer. Stored against the
+                  // company's domain, never on the lead, and only into cells no
+                  // vendor has filled — see saveListedCompanies.
+                  industry: z.string().max(200).optional(),
+                  employee_count: z.number().int().positive().optional(),
+                  company_city: z.string().max(200).optional(),
+                  company_country: z.string().max(200).optional(),
+                  company_linkedin_url: z.string().max(500).optional(),
                 }),
               )
               .min(1)
@@ -1054,10 +1111,13 @@ app.openapi(importLeads, async (c) => {
   // A lead with neither a name nor a domain can't be enriched by any provider,
   // so reject it at the boundary instead of storing a row that will only ever
   // produce "ineligible" attempts.
-  const rows = body.leads.filter((l) => (l.full_name || "").trim() || (l.domain || "").trim());
-  if (rows.length === 0) return c.json({ error: "Every lead needs at least a full_name or a domain" }, 400);
+  const valid = body.leads
+    .filter((l) => (l.full_name || "").trim() || (l.domain || "").trim())
+    .map(movePrivateProfileUrl);
+  if (valid.length === 0) return c.json({ error: "Every lead needs at least a full_name or a domain" }, 400);
 
   const runId = body.run_id ?? null;
+  const rows = await dropListedAlready(runId, valid);
   // 11 params per row; chunked to stay under D1's 100-bound-parameter cap.
   for (let i = 0; i < rows.length; i += 9) {
     const slice = rows.slice(i, i + 9);
@@ -1068,7 +1128,7 @@ app.openapi(importLeads, async (c) => {
       (l.full_name || "").trim(),
       (l.title || "").trim(),
       (l.company || "").trim(),
-      (l.domain || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0],
+      bareDomain(l.domain),
       (l.linkedin_url || "").trim(),
       (l.location || "").trim(),
       (l.source || "import").trim(),
@@ -1084,6 +1144,8 @@ app.openapi(importLeads, async (c) => {
     );
   }
 
+  await saveListedCompanies(rows);
+
   if (runId) {
     await run(
       "UPDATE runs SET lead_count = (SELECT COUNT(*) FROM leads WHERE run_id = ?), updated_at = datetime('now') WHERE id = ?",
@@ -1092,6 +1154,105 @@ app.openapi(importLeads, async (c) => {
   }
   return c.json({ imported: rows.length, run_id: runId }, 201);
 });
+
+type ImportedLead = {
+  full_name?: string;
+  domain?: string;
+  company?: string;
+  linkedin_url?: string;
+  source?: string;
+  source_url?: string;
+  industry?: string;
+  employee_count?: number;
+  company_city?: string;
+  company_country?: string;
+  company_linkedin_url?: string;
+};
+
+function bareDomain(raw: string | undefined): string {
+  return (raw || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+}
+
+/**
+ * A Sales Navigator lead link (linkedin.com/sales/lead/…) only opens for a
+ * signed-in seat. No enrichment vendor can resolve it and a LinkedIn audience
+ * upload cannot match on it, so in `linkedin_url` it would only make the lead
+ * look better covered than it is. It is kept, as the citation it is.
+ */
+function movePrivateProfileUrl<T extends ImportedLead>(l: T): T {
+  const url = (l.linkedin_url || "").trim();
+  if (!/linkedin\.com\/sales\//i.test(url)) return l;
+  return { ...l, linkedin_url: "", source_url: (l.source_url || "").trim() || url };
+}
+
+/**
+ * A Sales Navigator export is posted a page at a time, and a dispatch retry
+ * starts the list again from the top. The lead link is stable, so a lead
+ * already in this run under the same link is skipped instead of stored twice.
+ * Scoped to that source: an open-web run may cite one page for several people.
+ */
+async function dropListedAlready<T extends ImportedLead>(runId: string | null, rows: T[]): Promise<T[]> {
+  const listed = (l: T) => runId && (l.source || "").trim() === "sales_navigator" && (l.source_url || "").trim();
+  const urls = [...new Set(rows.filter(listed).map((l) => (l.source_url || "").trim()))];
+  if (urls.length === 0) return rows;
+  const seen = new Set<string>();
+  for (let i = 0; i < urls.length; i += 50) {
+    const chunk = urls.slice(i, i + 50);
+    const found = await query<{ source_url: string }>(
+      `SELECT source_url FROM leads WHERE run_id = ? AND source = 'sales_navigator' AND source_url IN (${chunk.map(() => "?").join(",")})`,
+      [runId, ...chunk],
+    );
+    for (const r of found) seen.add(r.source_url);
+  }
+  return rows.filter((l) => {
+    if (!listed(l)) return true;
+    const url = (l.source_url || "").trim();
+    if (seen.has(url)) return false;
+    seen.add(url); // also drops a repeat inside this same batch
+    return true;
+  });
+}
+
+/**
+ * Firmographics the list itself showed, written to the company store.
+ *
+ * Fill-blanks only, in both directions: a row a vendor already filled keeps
+ * the vendor's values, and a new row takes these. That is what lets an export
+ * with emails off cost nothing — the list's own industry and headcount reach
+ * the LinkedIn company audience without a company lookup being bought.
+ */
+async function saveListedCompanies(rows: ImportedLead[]): Promise<void> {
+  const byDomain = new Map<string, ImportedLead>();
+  for (const l of rows) {
+    const domain = bareDomain(l.domain);
+    const hasAny = l.industry || l.employee_count || l.company_city || l.company_country || l.company_linkedin_url;
+    if (domain && hasAny && !byDomain.has(domain)) byDomain.set(domain, l);
+  }
+  for (const [domain, l] of byDomain) {
+    const pageUrl = (l.company_linkedin_url || "").trim();
+    await run(
+      `INSERT INTO companies (domain, name, linkedin_url, industry, city, country, employee_count, provider_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'sales_navigator')
+       ON CONFLICT(domain) DO UPDATE SET
+         name = CASE WHEN companies.name = '' THEN excluded.name ELSE companies.name END,
+         linkedin_url = CASE WHEN companies.linkedin_url = '' THEN excluded.linkedin_url ELSE companies.linkedin_url END,
+         industry = CASE WHEN companies.industry = '' THEN excluded.industry ELSE companies.industry END,
+         city = CASE WHEN companies.city = '' THEN excluded.city ELSE companies.city END,
+         country = CASE WHEN companies.country = '' THEN excluded.country ELSE companies.country END,
+         employee_count = COALESCE(companies.employee_count, excluded.employee_count)`,
+      [
+        domain,
+        (l.company || "").trim(),
+        // Same rule as the company adapters: only a company page belongs here.
+        /linkedin\.com\/company\//i.test(pageUrl) ? pageUrl : "",
+        (l.industry || "").trim(),
+        (l.company_city || "").trim(),
+        (l.company_country || "").trim(),
+        l.employee_count ?? null,
+      ],
+    );
+  }
+}
 
 const getLead = createRoute({
   method: "get",

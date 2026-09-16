@@ -8,6 +8,19 @@ CREATE TABLE IF NOT EXISTS runs (
   -- The natural-language ICP, or the domain when the user chose "use my domain".
   icp_prompt TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending', -- pending|sourcing|enriching|done|failed
+  -- Where the leads come from. 'icp': the agent researches the open web from
+  -- icp_prompt. 'sales_navigator': icp_prompt holds a Sales Navigator search or
+  -- lead-list URL, and the agent reads that list in its own signed-in browser.
+  source TEXT NOT NULL DEFAULT 'icp',
+  -- Which contact fields this run's enrichment buys, comma-separated, in
+  -- FIELDS order. Stored on the run rather than passed along, because four
+  -- paths continue a lead (batch job, single lead, callback, timeout sweep) and
+  -- a choice carried by one of them is a choice the others silently ignore.
+  enrich_fields TEXT NOT NULL DEFAULT 'email,phone',
+  -- 1 when the agent should start enrichment itself once sourcing is done
+  -- (the "include emails" choice). Kept on the row because a retried dispatch
+  -- rebuilds the instruction from it.
+  auto_enrich INTEGER NOT NULL DEFAULT 0,
   lead_count INTEGER NOT NULL DEFAULT 0,
   -- Running total from the attempt ledger; shown as "what this search cost you".
   credits_spent INTEGER NOT NULL DEFAULT 0,

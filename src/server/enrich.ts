@@ -20,6 +20,19 @@ import type { EnrichField, EnrichResult, LeadInput, PendingWaterfall, WaterfallR
 export const FIELDS: EnrichField[] = ["email", "phone"];
 
 /**
+ * The fields a lead's run buys, in FIELDS order. A lead with no run, or a run
+ * with no recorded choice, gets both — the behaviour before runs could choose.
+ * An unknown name in the column is dropped rather than trusted.
+ */
+export async function runFields(runId: unknown): Promise<EnrichField[]> {
+  if (!runId) return FIELDS;
+  const row = await get<{ enrich_fields: string }>("SELECT enrich_fields FROM runs WHERE id = ?", [String(runId)]);
+  if (!row) return FIELDS;
+  const wanted = new Set(row.enrich_fields.split(",").map((f) => f.trim()));
+  return FIELDS.filter((f) => wanted.has(f));
+}
+
+/**
  * How long a paused lead waits for a vendor's callback before the waterfall
  * gives up on that vendor and moves on. Deliberately under the run staleness
  * window (15 minutes) so a run that is only waiting on callbacks is never
@@ -88,7 +101,9 @@ export async function enrichLead(
 ): Promise<EnrichOutcome> {
   const outcome: EnrichOutcome = { status: "done", credits: 0, cached: false };
   const row = { ...lead };
-  for (const field of FIELDS.slice(FIELDS.indexOf(fromField))) {
+  const from = FIELDS.indexOf(fromField);
+  const fields = (await runFields(row.run_id)).filter((f) => FIELDS.indexOf(f) >= from);
+  for (const field of fields) {
     const token = crypto.randomUUID();
     const res = await runWaterfall(field, leadInput(row), env, {
       order: opts.orders[field],
@@ -143,6 +158,8 @@ export async function resumeLead(token: string, answer: EnrichResult, env: Enric
   fold(outcome, step);
   if (step.status === "waiting") return true;
 
+  // enrichLead applies the run's field choice, so an emails-only run that
+  // resumes here goes no further than the email it was waiting on.
   const next = FIELDS[FIELDS.indexOf(pending.field) + 1];
   if (next) {
     // enrichLead finishes the lead itself; only the last field falls through.

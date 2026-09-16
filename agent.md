@@ -88,6 +88,26 @@ then `/api/monitor-checks/{id}/observations` to record engagement and
 - Person-level findings do not require a guessed company domain or event date.
 - The app handles baseline visibility and deduplication; submit observed matches
   even when you think they were seen before. Coverage is bounded, not exhaustive.
+
+### Sales Navigator exports
+
+A run with `source: "sales_navigator"` holds a Sales Navigator list URL in
+`icp_prompt`, and its task tells you exactly what to read and post. The rules
+that matter:
+
+- Use your own signed-in browser. Stop at a sign-in page, CAPTCHA, restriction
+  or rate limit, and report it with `PATCH /api/runs/{id}` (`failed`, plus what
+  you saw). Never work around it and never ask for a password.
+- At most 2,500 people. Post each results page as you finish it, with
+  `source: "sales_navigator"` and the lead link as `source_url`. Re-posting the
+  same people after a retry is safe; the app skips ones it already has.
+- `linkedin_url` is only for a public `linkedin.com/in/` link. A
+  `/sales/lead/` link goes in `source_url`.
+- Company fields (`industry`, `employee_count`, `company_city`,
+  `company_country`, `company_linkedin_url`) come from the company's account
+  page, read once per company.
+- Never look up emails yourself. If the run has `auto_enrich: 1`, finish with
+  `POST /api/runs/{id}/enrich`, which only looks up emails for these runs.
 - These findings do **not** automatically create leads, enrich or contact anyone.
   The user chooses **Add to people**. Never call enrichment/export during a check.
 
@@ -122,6 +142,7 @@ be lower than what you sent; the difference is the unenrichable rows.
 | Reach for | When |
 |---|---|
 | `POST /api/runs` | Group a search before posting leads to it. |
+| `POST /api/runs/sales-navigator` | Start an export of a Sales Navigator people search or lead list: `{ url, include_emails }`. Then `POST /api/runs/{id}/dispatch`. |
 | `PATCH /api/runs/{id}` | Report progress: `sourcing` → `done`, or `failed` with a one-line reason. The user's only view into your work. |
 | `POST /api/runs/{id}/enrich` | Enrich every pending lead in a run. Returns `202`; poll `GET /api/leads?run_id=…&enrich_status=pending` to watch it drain. |
 | `GET /api/leads/{id}` | One lead **plus its attempt log** — how you answer "why has this lead got no email?" |

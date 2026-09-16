@@ -60,6 +60,12 @@ export interface Run {
   updated_at: string;
   /** Server-computed: 1 when a sourcing run has gone quiet past the window. */
   stale: number;
+  /** 'icp' (the agent researches the web) or 'sales_navigator' (icp_prompt is the list URL). */
+  source: string;
+  /** Contact fields this run buys, e.g. 'email,phone' or 'email'. */
+  enrich_fields: string;
+  /** 1 when enrichment starts by itself once the list is in. */
+  auto_enrich: number;
 }
 
 export interface Provider {
@@ -174,6 +180,9 @@ export const api = {
 
   createRun: (icp_prompt: string) =>
     req<{ run: Run }>("/api/runs", { method: "POST", body: JSON.stringify({ icp_prompt }) }),
+
+  createSalesNavRun: (url: string, include_emails: boolean) =>
+    req<{ run: Run }>("/api/runs/sales-navigator", { method: "POST", body: JSON.stringify({ url, include_emails }) }),
 
   /** Hand a run to the agent. Throws an ApiError carrying `brief` when it fails. */
   dispatchRun: (id: string) =>
