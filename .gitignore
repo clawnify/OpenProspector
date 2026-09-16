@@ -7,3 +7,4 @@ dist/
 *.log
 .DS_Store
 src/server/signal-skill.gen.ts
+.preview-build/

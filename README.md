@@ -1,4 +1,7 @@
-<img src="readme-banner.png" alt="OpenProspector preview" width="100%" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="readme-banner-dark.png" />
+  <img src="readme-banner.png" alt="OpenProspector: find B2B leads and enrich them on your own provider keys, at vendor cost" width="100%" />
+</picture>
 
 # OpenProspector: The Open-Source Clay Alternative for Lead Enrichment
 
@@ -7,6 +10,16 @@
 Find B2B leads and enrich them with **your own provider keys** — at vendor cost, with no per-lead markup. An open-source app template provided by [Clawnify.com](https://clawnify.com).
 
 Built with **React + Tailwind** on a **Hono API** and a **SQLite** database. Path-based routing, UUID keys, a dark mode that follows the OS, and a full OpenAPI surface so agents can drive it.
+
+## See it in action
+
+Conceptual UI illustrations of the app's main capabilities, with fictional example data. Open an image to see the details.
+
+| Describe the buyer | Order your vendors |
+|---|---|
+| [![A conceptual ideal customer profile field being typed into, beside a list of searches](previews/sourcing.png)](previews/sourcing.png) | [![A conceptual email waterfall with a provider being moved up the list](previews/waterfall.png)](previews/waterfall.png) |
+| **See who found it, and what it cost** | **Act on signals with proof** |
+| [![A conceptual leads list where each email names the provider that found it, with a cache notice](previews/attribution.png)](previews/attribution.png) | [![A conceptual company signal with its evidence link and a Source this button](previews/signals.png)](previews/signals.png) |
 
 ## What Is It?
 

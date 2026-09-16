@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "app": "OpenProspector",
+  "repo": "clawnify/OpenProspector",
+  "capturedAt": "2026-09-16",
+  "sourceBaseCommit": "7bf81d448c5a518e209a28eab74eee28880b2e57",
+  "captureNotes": "Real TaskWindow captures of a separate local database loaded from demo/readme-preview.sql (fictional people and .example domains). Provider keys were placeholders, so no vendor was called for data. Dark capture applies the app's existing prefers-color-scheme dark rules through CSSOM; no UI content is replaced. Desktop capture is a 1440×960 emulated viewport.",
+  "screenshots": [
+    {
+      "id": "leads",
+      "src": "screenshots/leads.png",
+      "title": "Leads",
+      "alt": "The Leads screen: an ideal customer profile box, three searches with their status, and a table of leads showing each email with the provider that found it.",
+      "route": "/",
+      "theme": "light",
+      "width": 1440,
+      "height": 960,
+      "viewport": { "width": 1440, "height": 960 }
+    },
+    {
+      "id": "leads-dark",
+      "src": "screenshots/leads-dark.png",
+      "title": "Leads · Dark",
+      "alt": "The Leads screen: an ideal customer profile box, three searches with their status, and a table of leads showing each email with the provider that found it.",
+      "route": "/",
+      "theme": "dark",
+      "width": 1440,
+      "height": 960,
+      "viewport": { "width": 1440, "height": 960 }
+    }
+  ],
+  "cover": {
+    "light": "leads",
+    "dark": "leads-dark",
+    "title": "OpenProspector",
+    "subtitle": "Find B2B leads and enrich them on your own provider keys, at vendor cost.",
+    "headline": "Real leads.\nVerified emails.\nVendor cost."
+  },
+  "features": [
+    {
+      "id": "sourcing",
+      "title": "Describe the buyer.\nGet named leads.",
+      "subtitle": "Your agent researches the web and brings back each lead with the reason it qualifies.",
+      "eyebrow": "01 / SOURCING",
+      "background": "#f6efef",
+      "alt": "Conceptual ideal customer profile field being typed into, with a slightly overlapping list of searches showing one sourcing and one done.",
+      "sources": ["src/client/app.tsx", "src/client/components/runs-panel.tsx"],
+      "kind": "conceptual-ui"
+    },
+    {
+      "id": "waterfall",
+      "title": "Your vendors.\nYour order.",
+      "subtitle": "Choose which provider each lookup tries first. The first verified email ends the search.",
+      "eyebrow": "02 / WATERFALL",
+      "background": "#eff0f7",
+      "alt": "Conceptual email waterfall with a provider being moved up the list, and an overlapping note that the first verified result wins.",
+      "sources": ["src/client/components/waterfall.tsx", "src/server/providers/index.ts"],
+      "kind": "conceptual-ui"
+    },
+    {
+      "id": "attribution",
+      "title": "See who found it.\nAnd what it cost.",
+      "subtitle": "Every email names the vendor that found it. People you already bought are reused, not bought again.",
+      "eyebrow": "03 / COST",
+      "background": "#eef3ef",
+      "alt": "Conceptual leads list where each email shows the provider that found it, with an overlapping cache notice and credit totals.",
+      "sources": ["src/client/components/leads-table.tsx", "src/server/cache.ts"],
+      "kind": "conceptual-ui"
+    },
+    {
+      "id": "signals",
+      "title": "A reason to call.\nWith the proof.",
+      "subtitle": "Signals link to a dated public source, so you can check it before starting a search.",
+      "eyebrow": "04 / SIGNALS",
+      "background": "#f5f1e8",
+      "alt": "Conceptual company signal with its evidence link and Source this button, with an overlapping second signal for the same company.",
+      "sources": ["src/client/routes/signals.tsx", "src/server/signals.ts"],
+      "kind": "conceptual-ui"
+    }
+  ],
+  "carousel": ["sourcing", "waterfall", "attribution", "signals"]
+}
