@@ -1,0 +1,30 @@
+[
+  {
+    "src": "previews/sourcing.png",
+    "alt": "Conceptual ideal customer profile field being typed into, with a slightly overlapping list of searches showing one sourcing and one done.",
+    "caption": "Describe the buyer. Get named leads.",
+    "width": 1600,
+    "height": 1000
+  },
+  {
+    "src": "previews/waterfall.png",
+    "alt": "Conceptual email waterfall with a provider being moved up the list, and an overlapping note that the first verified result wins.",
+    "caption": "Your vendors. Your order.",
+    "width": 1600,
+    "height": 1000
+  },
+  {
+    "src": "previews/attribution.png",
+    "alt": "Conceptual leads list where each email shows the provider that found it, with an overlapping cache notice and credit totals.",
+    "caption": "See who found it. And what it cost.",
+    "width": 1600,
+    "height": 1000
+  },
+  {
+    "src": "previews/signals.png",
+    "alt": "Conceptual company signal with its evidence link and Source this button, with an overlapping second signal for the same company.",
+    "caption": "A reason to call. With the proof.",
+    "width": 1600,
+    "height": 1000
+  }
+]

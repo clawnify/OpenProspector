@@ -10,7 +10,11 @@
     "build": "node scripts/build-signal-skill.mjs && vite build",
     "typecheck": "node scripts/build-signal-skill.mjs && tsc --noEmit",
     "test": "node scripts/build-signal-skill.mjs && vitest run",
-    "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql"
+    "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql",
+    "previews:logos": "node scripts/build-previews.mjs logos",
+    "previews:build": "node scripts/build-previews.mjs build",
+    "previews:check": "node scripts/build-previews.mjs check",
+    "previews:export": "node scripts/build-previews.mjs export"
   },
   "dependencies": {
     "@clawnify/agents": "^0.1.1",
