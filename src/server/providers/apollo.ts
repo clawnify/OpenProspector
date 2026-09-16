@@ -11,6 +11,8 @@
 // when a mobile is delivered.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
@@ -39,7 +41,7 @@ interface PhoneWebhook {
   credits_consumed?: number;
   people?: { status?: string; phone_numbers?: PhoneNumber[] | null }[];
 }
-import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { absoluteLinkedIn, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.apollo.io";
 
@@ -159,3 +161,91 @@ function readPhones(numbers: PhoneNumber[], credits: number): EnrichResult {
   if (!value) return miss("No mobile or direct dial delivered", 0);
   return { outcome: "hit", value, verified: true, creditsUsed: credits, detail: `Apollo type: ${pick?.type_cd}` };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://docs.apollo.io/reference/organization-enrichment
+// on 2026-09-03, and the endpoint probed live (401 on a bad key):
+//   GET /api/v1/organizations/enrich?domain=
+//        -> { organization: { name, website_url, linkedin_url, industry, city,
+//                             state, postal_code, country,
+//                             estimated_num_employees, founded_year,
+//                             publicly_traded_symbol } }
+//   Auth: x-api-key   (the same key as the person adapter above)
+//
+// One credit per organization, charged on a match. Works on Apollo's free plan,
+// which is why this sits first in the default company order: it is the one
+// vendor here a user can try without buying anything.
+//
+// Apollo's docs do not state the no-match response shape, and it cannot be
+// probed without a valid key. A missing or null `organization` is therefore
+// treated as a miss costing nothing — the safe reading in both directions: if
+// Apollo does bill for it the ledger understates by one credit, whereas
+// treating it as a hit would write an empty row into the six-month cache and
+// stop every vendor behind it from ever being asked.
+
+interface OrganizationBody {
+  name?: string | null;
+  linkedin_url?: string | null;
+  industry?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postal_code?: string | null;
+  country?: string | null;
+  estimated_num_employees?: number | null;
+  founded_year?: number | null;
+  publicly_traded_symbol?: string | null;
+}
+
+export const ApolloCompanyProvider: CompanyProvider = {
+  id: "apollo-company",
+  label: "Apollo",
+  secretName: "APOLLO_API_KEY",
+  signupUrl: "https://www.apollo.io/pricing",
+  // Every CompanyRecord field: `organizations/enrich` returns all ten,
+  // ticker (`publicly_traded_symbol`) and postal code included.
+  covers: [
+    "name",
+    "linkedinUrl",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "postalCode",
+    "stockSymbol",
+    "employeeCount",
+    "foundedYear",
+  ],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await vendorFetch(
+      `${BASE}/api/v1/organizations/enrich?domain=${encodeURIComponent(domain)}`,
+      { headers: { "x-api-key": apiKey } },
+    );
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "Apollo");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const org = (body as { organization?: OrganizationBody | null } | null)?.organization;
+    if (!org) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No organization matched this domain" };
+
+    return {
+      outcome: "hit",
+      creditsUsed: 1,
+      data: {
+        name: org.name || undefined,
+        industry: org.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(org.linkedin_url),
+        stockSymbol: org.publicly_traded_symbol || undefined,
+        employeeCount: org.estimated_num_employees ?? undefined,
+        foundedYear: org.founded_year ?? undefined,
+        city: org.city || undefined,
+        state: org.state || undefined,
+        country: org.country || undefined,
+        postalCode: org.postal_code || undefined,
+      },
+    };
+  },
+};

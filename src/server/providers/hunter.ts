@@ -24,12 +24,15 @@
 // found — so creditsUsed is 0 on a miss.
 
 import type {
+  AttemptOutcome,
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
 } from "./types";
-import { ineligible, miss, vendorFetch } from "./vendor";
+import { absoluteLinkedIn, ineligible, miss, vendorFetch } from "./vendor";
 
 const BASE = "https://api.hunter.io";
 
@@ -88,23 +91,117 @@ export const HunterProvider: EnrichProvider = {
   // the settings screen already handles a provider that reports no balance.
 };
 
-function errorResult(status: number, body: unknown): EnrichResult {
+/**
+ * Hunter's status mapping, in one place because the company adapter below needs
+ * the identical rules and they are too easy to get subtly wrong twice — see the
+ * header comment on why 429, 451 and 400 do not mean here what they mean
+ * anywhere else in the registry.
+ */
+export function hunterOutcome(
+  status: number,
+  body: unknown,
+): { outcome: Exclude<AttemptOutcome, "pending">; detail?: string } {
   const errorId = String(
     (body as { errors?: { id?: string }[] } | null)?.errors?.[0]?.id ?? "",
   ).toLowerCase();
 
   // See the header comment: for Hunter a 429 is the monthly quota, not a
   // transient rate limit, and must be surfaced as such.
-  if (status === 429) {
-    return { outcome: "no_credits", value: null, verified: false, creditsUsed: 0, detail: "Hunter monthly search quota exhausted" };
-  }
-  if (status === 401) {
-    return { outcome: "unconfigured", value: null, verified: false, creditsUsed: 0, detail: "Hunter rejected the API key" };
-  }
+  if (status === 429) return { outcome: "no_credits", detail: "Hunter monthly search quota exhausted" };
+  if (status === 401) return { outcome: "unconfigured", detail: "Hunter rejected the API key" };
   if (status === 451 || errorId === "claimed_email") {
-    return miss("Hunter withheld this address at the data subject's request");
+    return { outcome: "miss", detail: "Hunter withheld this record at the data subject's request" };
   }
-  if (errorId === "invalid_domain") return miss("Hunter rejected the domain (no MX records or not resolvable)");
-  if (status === 400) return ineligible(`Hunter rejected the request${errorId ? ` (${errorId})` : ""}`);
-  return { outcome: "error", value: null, verified: false, creditsUsed: 0, detail: `Hunter returned HTTP ${status}` };
+  if (errorId === "invalid_domain") return { outcome: "miss", detail: "Hunter rejected the domain (no MX records or not resolvable)" };
+  if (status === 404) return { outcome: "miss", detail: "No record found" };
+  if (status === 400) return { outcome: "ineligible", detail: `Hunter rejected the request${errorId ? ` (${errorId})` : ""}` };
+  return { outcome: "error", detail: `Hunter returned HTTP ${status}` };
 }
+
+function errorResult(status: number, body: unknown): EnrichResult {
+  const { outcome, detail } = hunterOutcome(status, body);
+  return { outcome, value: null, verified: false, creditsUsed: 0, detail };
+}
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://hunter.io/api-documentation/v2 on
+// 2026-09-03, and the endpoint probed live (401 on a bad key, with the same
+// `X-API-KEY` header the finder uses — the query-string form is avoided here
+// for the same reason as above):
+//   GET /v2/companies/find?domain=
+//        -> { data: { name, domain, ticker, foundedYear,
+//                     category: { industry, sector },
+//                     geo: { city, state, postalCode, country },
+//                     linkedin: { handle }, metrics: { employeesCount } } }
+//
+// The mapping trap: `linkedin.handle` is a bare handle ("company/stripe"), not
+// a URL. Written into the LinkedIn upload unchanged it is not a link at all.
+//
+// Error mapping is shared with the finder via hunterOutcome — Hunter's 429 is
+// an exhausted monthly quota rather than a rate limit, and reporting that as a
+// transient error is how a user never learns why their coverage collapsed.
+
+interface CompanyBody {
+  name?: string | null;
+  ticker?: string | null;
+  foundedYear?: number | null;
+  category?: { industry?: string | null } | null;
+  geo?: { city?: string | null; state?: string | null; postalCode?: string | null; country?: string | null } | null;
+  linkedin?: { handle?: string | null } | null;
+  metrics?: { employeesCount?: number | null } | null;
+}
+
+export const HunterCompanyProvider: CompanyProvider = {
+  id: "hunter-company",
+  label: "Hunter",
+  secretName: "HUNTER_API_KEY",
+  signupUrl: "https://hunter.io/api-keys",
+  // Every CompanyRecord field: `companies/find` returns all ten, with the
+  // ticker as `ticker` and the postal code under `geo`.
+  covers: [
+    "name",
+    "linkedinUrl",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "postalCode",
+    "stockSymbol",
+    "employeeCount",
+    "foundedYear",
+  ],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await vendorFetch(
+      `${BASE}/v2/companies/find?domain=${encodeURIComponent(domain)}`,
+      { headers: { "X-API-KEY": apiKey } },
+    );
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = hunterOutcome(status, body);
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const d = (body as { data?: CompanyBody } | null)?.data;
+    if (!d) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    const geo = d.geo ?? {};
+    return {
+      outcome: "hit",
+      creditsUsed: 1,
+      data: {
+        name: d.name || undefined,
+        industry: d.category?.industry || undefined,
+        linkedinUrl: absoluteLinkedIn(d.linkedin?.handle),
+        stockSymbol: d.ticker || undefined,
+        employeeCount: d.metrics?.employeesCount ?? undefined,
+        foundedYear: d.foundedYear ?? undefined,
+        city: geo.city || undefined,
+        state: geo.state || undefined,
+        country: geo.country || undefined,
+        postalCode: geo.postalCode || undefined,
+      },
+    };
+  },
+};

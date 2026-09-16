@@ -14,7 +14,9 @@
 // Billing: one credit per address returned with a `valid` or `unknown` status;
 // nothing when nothing is found.
 
-import type { CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement } from "./types";
+import type {
+  CompanyProvider,
+  CompanyResult, CreditBalance, EnrichField, EnrichProvider, EnrichResult, InputRequirement } from "./types";
 import { ineligible, miss, nameParts, pollUntil, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.snov.io";
@@ -33,12 +35,19 @@ interface TaskResult {
 /** Bearer tokens by client id, so a batch does not mint one per lead. */
 const tokens = new Map<string, { token: string; expiresAt: number }>();
 
-type Auth = { ok: true; token: string } | { ok: false; result: EnrichResult };
+/**
+ * Failure carries a `detail` rather than a finished EnrichResult, because both
+ * the person adapter and the company adapter below authenticate through here
+ * and they return different result shapes. Both failure modes are
+ * `unconfigured`: a malformed secret and rejected credentials are the same
+ * problem to the user — this vendor is unusable until the key is fixed.
+ */
+type Auth = { ok: true; token: string } | { ok: false; detail: string };
 
 async function authenticate(apiKey: string): Promise<Auth> {
   const sep = apiKey.indexOf(":");
   if (sep <= 0) {
-    return { ok: false, result: { outcome: "unconfigured", value: null, verified: false, creditsUsed: 0, detail: "SNOV_API_KEY must be clientId:clientSecret" } };
+    return { ok: false, detail: "SNOV_API_KEY must be clientId:clientSecret" };
   }
   const clientId = apiKey.slice(0, sep);
   const cached = tokens.get(clientId);
@@ -57,7 +66,7 @@ async function authenticate(apiKey: string): Promise<Auth> {
     body = null;
   }
   if (res.status < 200 || res.status >= 300 || !body?.access_token) {
-    return { ok: false, result: { outcome: "unconfigured", value: null, verified: false, creditsUsed: 0, detail: "Snov.io rejected the client credentials" } };
+    return { ok: false, detail: "Snov.io rejected the client credentials" };
   }
   // A minute of slack so a token never expires mid-lookup.
   const ttl = Math.max(60, (body.expires_in ?? 3600) - 60) * 1000;
@@ -82,7 +91,7 @@ export const SnovProvider: EnrichProvider = {
     if (!name || !input.domain) return ineligible("Needs a first and last name plus a domain");
 
     const auth = await authenticate(apiKey);
-    if (!auth.ok) return auth.result;
+    if (!auth.ok) return { outcome: "unconfigured", value: null, verified: false, creditsUsed: 0, detail: auth.detail };
     const headers = { Authorization: `Bearer ${auth.token}` };
 
     const started = await vendorFetch(`${BASE}/v2/emails-by-domain-by-name/start`, {
@@ -136,3 +145,90 @@ function readEmail(found: Found[]): EnrichResult {
   }
   return miss();
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://snov.io/api on 2026-09-03, and the endpoint
+// probed live (401 `{"error":"Unauthenticated"}` on a bogus bearer):
+//   POST /v2/domain-search/start   { domain }  -> { data: { task_hash } }
+//   GET  /v2/domain-search/result/{task_hash}
+//        -> { data: { company_name, city, founded, website, industry, size },
+//             status: "completed" }
+//   Auth: the same OAuth bearer the finder mints, from the same client
+//         credentials — no second key to configure.
+//
+// Same task shape as every other Snov endpoint, so it is polled in band by the
+// shared helper rather than pausing the lead.
+//
+// **The thinnest coverage in the registry, and the pricing is the reason it
+// sits last.** Snov charges "1 credit per each unique request" for company
+// info, which is charged whether or not the domain matches — unlike the
+// bill-only-on-a-find vendors above it. Combined with a response carrying no
+// LinkedIn page, no country, no state, no postal code and no ticker, a call
+// here is worth making only when the vendors ahead have left `industry` or
+// `city` open, which is exactly what `covers` tells the runner.
+//
+// `size` is a bucketed range ("51-200"), so employeeCount is left unset rather
+// than parsed out of one, and `founded` is a string year.
+
+interface DomainSearchData {
+  company_name?: string | null;
+  city?: string | null;
+  founded?: string | number | null;
+  industry?: string | null;
+}
+
+export const SnovCompanyProvider: CompanyProvider = {
+  id: "snov-company",
+  label: "Snov.io",
+  secretName: "SNOV_API_KEY",
+  signupUrl: "https://snov.io/pricing",
+  keyFormat: "clientId:clientSecret",
+  covers: ["name", "industry", "city", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const auth = await authenticate(apiKey);
+    if (!auth.ok) return { outcome: "unconfigured", data: null, creditsUsed: 0, detail: auth.detail };
+    const headers = { Authorization: `Bearer ${auth.token}` };
+
+    const started = await vendorFetch(`${BASE}/v2/domain-search/start`, { method: "POST", headers, body: { domain } });
+    if (started.status < 200 || started.status >= 300) {
+      const { outcome, detail } = statusOutcome(started.status, "Snov.io");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+    const hash = (started.body as { data?: { task_hash?: string } } | null)?.data?.task_hash;
+    if (!hash) return { outcome: "error", data: null, creditsUsed: 0, detail: "Snov.io accepted the task but returned no task_hash" };
+
+    const finished = await pollUntil<{ status: number; body: { data?: DomainSearchData; status?: string } | null }>(async () => {
+      const r = await vendorFetch(`${BASE}/v2/domain-search/result/${encodeURIComponent(hash)}`, { headers });
+      const b = r.body as { data?: DomainSearchData; status?: string } | null;
+      if (r.status < 200 || r.status >= 300) return { done: true, value: { status: r.status, body: b } };
+      return b?.status === "completed" ? { done: true, value: { status: r.status, body: b } } : { done: false };
+    });
+
+    if (!finished) {
+      return { outcome: "error", data: null, creditsUsed: 0, detail: `Snov.io task ${hash} still running after 25s` };
+    }
+    if (finished.status < 200 || finished.status >= 300) {
+      const { outcome, detail } = statusOutcome(finished.status, "Snov.io");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const d = finished.body?.data;
+    // The credit is spent on the request, not on the match — so a miss here
+    // still costs one, and the ledger has to say so or the run's total lies.
+    if (!d?.company_name) return { outcome: "miss", data: null, creditsUsed: 1, detail: "No company matched this domain" };
+
+    const year = Number(d.founded);
+    return {
+      outcome: "hit",
+      creditsUsed: 1,
+      data: {
+        name: d.company_name || undefined,
+        industry: d.industry || undefined,
+        city: d.city || undefined,
+        foundedYear: Number.isInteger(year) && year > 1600 && year < 2200 ? year : undefined,
+      },
+    };
+  },
+};

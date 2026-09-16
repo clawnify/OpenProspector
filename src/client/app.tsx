@@ -64,6 +64,11 @@ export function App() {
   const [search, setSearch] = useState("");
 
   const [icp, setIcp] = useState("");
+  // What the search card starts from: a described profile, or a Sales
+  // Navigator list the agent exports.
+  const [mode, setMode] = useState<"icp" | "sales_nav">("icp");
+  const [listUrl, setListUrl] = useState("");
+  const [includeEmails, setIncludeEmails] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [dispatching, setDispatching] = useState(false);
@@ -187,12 +192,21 @@ export function App() {
     [loadRuns, loadLeads],
   );
 
+  const canStart = mode === "icp" ? icp.trim().length >= 3 : listUrl.trim().length > 0;
+
   async function startRun() {
-    if (icp.trim().length < 3) return;
+    if (!canStart) return;
     let runId: string;
     try {
-      runId = (await api.createRun(icp.trim())).run.id;
-      setIcp("");
+      if (mode === "icp") {
+        runId = (await api.createRun(icp.trim())).run.id;
+        setIcp("");
+      } else {
+        // The server says why a URL can't be exported; the field keeps its
+        // value so the user can fix it rather than paste it again.
+        runId = (await api.createSalesNavRun(listUrl.trim(), includeEmails)).run.id;
+        setListUrl("");
+      }
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
       return;
@@ -312,14 +326,71 @@ export function App() {
 
                   <Card className="mb-6">
                     <Zone>
-                      <CardTitle>Ideal customer profile</CardTitle>
-                      <textarea
-                        value={icp}
-                        onChange={(e) => setIcp(e.target.value)}
-                        rows={2}
-                        placeholder="Find personal financial advisory firms that just hired a compliance officer…"
-                        className="input mt-3 h-auto resize-none py-2 text-sm"
-                      />
+                      <div role="group" aria-label="Find leads from" className="mb-3 inline-flex rounded-sm bg-muted p-0.5">
+                        {(
+                          [
+                            ["icp", "Describe a profile"],
+                            ["sales_nav", "Sales Navigator list"],
+                          ] as const
+                        ).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={mode === value}
+                            onClick={() => setMode(value)}
+                            className={`h-7 whitespace-nowrap rounded-[3px] px-2.5 text-xs font-medium ${
+                              mode === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <CardTitle>{mode === "icp" ? "Ideal customer profile" : "Export a Sales Navigator list"}</CardTitle>
+                      {mode === "icp" ? (
+                        <textarea
+                          value={icp}
+                          onChange={(e) => setIcp(e.target.value)}
+                          rows={2}
+                          placeholder="Find personal financial advisory firms that just hired a compliance officer…"
+                          className="input mt-3 h-auto resize-none py-2 text-sm"
+                        />
+                      ) : (
+                        <div className="mt-3 space-y-3">
+                          <label className="block text-sm">
+                            <span className="sr-only">Sales Navigator link</span>
+                            <input
+                              type="url"
+                              inputMode="url"
+                              value={listUrl}
+                              onChange={(e) => setListUrl(e.target.value)}
+                              placeholder="https://www.linkedin.com/sales/search/people?savedSearchId=…"
+                              className="input w-full text-sm"
+                            />
+                          </label>
+                          <label className="flex items-start gap-2 text-sm">
+                            <input
+                              className="mt-1 accent-primary"
+                              type="checkbox"
+                              checked={includeEmails}
+                              onChange={(e) => setIncludeEmails(e.target.checked)}
+                            />
+                            <span>
+                              Find work emails
+                              <span className="block text-xs text-muted-foreground">
+                                {includeEmails
+                                  ? "Found and verified with your email providers once the list is in. Most charge only when they find one."
+                                  : "Exports the list only: names, titles, profile links and company details. No credits are used."}
+                              </span>
+                            </span>
+                          </label>
+                          <p className="text-xs text-muted-foreground">
+                            A lead search, saved search or lead list. Your agent opens it in its own browser, signed in to
+                            Sales Navigator, and exports up to 2,500 people. It stops if LinkedIn asks it to sign in or
+                            slow down.
+                          </p>
+                        </div>
+                      )}
                       <div className="mt-3 flex items-center justify-between gap-3">
                         <label className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm px-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
                           <Upload size={16} />
@@ -339,9 +410,9 @@ export function App() {
                         <Button
                           variant="primary"
                           onClick={startRun}
-                          disabled={icp.trim().length < 3 || dispatching}
+                          disabled={!canStart || dispatching}
                         >
-                          {dispatching ? "Starting…" : "Start search"} <ArrowUp size={16} />
+                          {dispatching ? "Starting…" : mode === "icp" ? "Start search" : "Start export"} <ArrowUp size={16} />
                         </Button>
                       </div>
                     </Zone>

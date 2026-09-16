@@ -21,12 +21,15 @@
 // the API key" — technically true, uselessly so.
 
 import type {
+  AttemptOutcome,
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
 } from "./types";
-import { ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { ineligible, linkedInCompanyPage, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.tomba.io";
 
@@ -37,6 +40,27 @@ function splitKey(apiKey: string): { key: string; secret: string } | null {
   const key = apiKey.slice(0, i).trim();
   const secret = apiKey.slice(i + 1).trim();
   return key && secret ? { key, secret } : null;
+}
+
+/**
+ * Tomba's status mapping, in one place because the company adapter below needs
+ * the identical rules — and getting them subtly wrong twice is exactly how a
+ * user never learns their key is dead.
+ *
+ * See the header comment: Tomba reports a rejected key as a 400, so the body's
+ * error type decides and the status is only the fallback.
+ */
+export function tombaOutcome(
+  status: number,
+  body: unknown,
+): { outcome: Exclude<AttemptOutcome, "pending">; detail: string } {
+  const errorType = String(
+    (body as { errors?: { type?: string } } | null)?.errors?.type ?? "",
+  ).toLowerCase();
+  if (errorType === "authentication_failed") {
+    return { outcome: "unconfigured", detail: "Tomba rejected the API key" };
+  }
+  return statusOutcome(status, "Tomba");
 }
 
 export const TombaProvider: EnrichProvider = {
@@ -79,15 +103,7 @@ export const TombaProvider: EnrichProvider = {
     });
 
     if (status < 200 || status >= 300) {
-      // See the header comment: Tomba reports a rejected key as a 400, so the
-      // body's error type decides, and the status is only the fallback.
-      const errorType = String(
-        (body as { errors?: { type?: string } } | null)?.errors?.type ?? "",
-      ).toLowerCase();
-      if (errorType === "authentication_failed") {
-        return { outcome: "unconfigured", value: null, verified: false, creditsUsed: 0, detail: "Tomba rejected the API key" };
-      }
-      const { outcome, detail } = statusOutcome(status, "Tomba");
+      const { outcome, detail } = tombaOutcome(status, body);
       return { outcome, value: null, verified: false, creditsUsed: 0, detail };
     }
 
@@ -108,6 +124,94 @@ export const TombaProvider: EnrichProvider = {
       // quietly outspend its budget. Pin it against a real key before changing.
       creditsUsed: 1,
       detail: verification === "valid" ? undefined : `Tomba verification: ${verification || "unknown"}`,
+    };
+  },
+};
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against Tomba's own Clearbit-migration page
+// (https://docs.tomba.io/migration/clearbit/company-api) on 2026-09-03, and the
+// endpoint probed live — it answers a bad key with the same HTTP 400 +
+// `authentication_failed` the finder does, which is why tombaOutcome is shared:
+//   GET /v1/companies/find?domain=
+//        -> { data: { organization, website, industry, founded, employees,
+//                     country, state, city, postal_code, linkedin } }
+//   Auth: X-Tomba-Key + X-Tomba-Secret   (same compound key as the finder)
+//
+// **Two field names are read in both of their documented spellings, on purpose.**
+// Tomba documents this response in two places that disagree: the migration page
+// shows `employees` and `industry`, the Company Attributes page shows
+// `company_size` and `industries`. Without a key there is no way to settle which
+// the endpoint actually returns, and picking one is a coin flip that silently
+// ships an empty column. Reading both costs a few characters; guessing costs
+// the user a credit for a blank cell. Flagged rather than hidden so whoever
+// gets a Tomba key can delete the loser.
+//
+// `linkedin` is a bare vanity ("tomba"), not a URL — hence linkedInCompanyPage
+// rather than absoluteLinkedIn, which by design rejects a value with no
+// `company/` segment. Should the field turn out to be the `linkedin_url` the
+// attributes page claims, linkedInCompanyPage passes a URL straight through.
+//
+// No ticker in either documented shape. `employees` is a bucketed range
+// ("11-50"), so employeeCount is left unset rather than parsed out of a range.
+
+interface CompanyBody {
+  organization?: string | null;
+  industry?: string | null;
+  industries?: string | string[] | null;
+  founded?: number | null;
+  country?: string | null;
+  state?: string | null;
+  city?: string | null;
+  postal_code?: string | null;
+  linkedin?: string | null;
+  linkedin_url?: string | null;
+}
+
+export const TombaCompanyProvider: CompanyProvider = {
+  id: "tomba-company",
+  label: "Tomba",
+  secretName: "TOMBA_API_KEY",
+  signupUrl: "https://app.tomba.io/auth/api",
+  keyFormat: "key:secret",
+  covers: ["name", "linkedinUrl", "industry", "city", "state", "country", "postalCode", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const creds = splitKey(apiKey);
+    if (!creds) {
+      return { outcome: "unconfigured", data: null, creditsUsed: 0, detail: "TOMBA_API_KEY must be in the form key:secret" };
+    }
+
+    const { status, body } = await vendorFetch(`${BASE}/v1/companies/find?domain=${encodeURIComponent(domain)}`, {
+      headers: { "X-Tomba-Key": creds.key, "X-Tomba-Secret": creds.secret },
+    });
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = tombaOutcome(status, body);
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const d = (body as { data?: CompanyBody | null } | null)?.data;
+    // Tomba answers a fruitless lookup with a 200 and an empty data object.
+    if (!d || !d.organization) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    // See the header: two documented spellings, both read.
+    const industry = d.industry || (Array.isArray(d.industries) ? d.industries[0] : d.industries) || undefined;
+
+    return {
+      outcome: "hit",
+      creditsUsed: 1,
+      data: {
+        name: d.organization || undefined,
+        industry: industry || undefined,
+        linkedinUrl: linkedInCompanyPage(d.linkedin ?? d.linkedin_url),
+        foundedYear: d.founded ?? undefined,
+        city: d.city || undefined,
+        state: d.state || undefined,
+        country: d.country || undefined,
+        postalCode: d.postal_code || undefined,
+      },
     };
   },
 };

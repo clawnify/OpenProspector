@@ -17,13 +17,15 @@
 // Note `company` and `company_domain` are arrays here, not strings.
 
 import type {
+  CompanyProvider,
+  CompanyResult,
   EnrichField,
   EnrichProvider,
   EnrichResult,
   InputRequirement,
   LeadInput,
 } from "./types";
-import { IDENTIFIED_PERSON, ineligible, miss, statusOutcome, vendorFetch } from "./vendor";
+import { IDENTIFIED_PERSON, ineligible, linkedInCompanyPage, miss, statusOutcome, vendorFetch } from "./vendor";
 
 const BASE = "https://api.contactout.com/v1";
 
@@ -108,3 +110,79 @@ function readPhone(profile: Profile): EnrichResult {
   if (!value) return miss("Profile matched but carries no phone number", 1);
   return { outcome: "hit", value, verified: true, creditsUsed: 2 };
 }
+
+// ── Company enrichment ──────────────────────────────────────────────
+//
+// Contract verified against https://api.contactout.com/ on 2026-09-03, and the
+// endpoint probed live (401 on a bad key):
+//   POST /v1/domain/enrich  { domains: ["acme.com"] }   (array, max 30)
+//        -> { status_code, companies: { "acme.com": { name, domain, li_vanity,
+//             country, headquarter, size, founded_at, industry, ... } } }
+//   Auth: token: <key>   (same key and header as the person adapter)
+//
+// Two shapes this adapter exists to absorb:
+//
+//  1. **The request takes an ARRAY and the response is keyed BY DOMAIN**, not a
+//     bare company object. The runner resolves one company at a time, so this
+//     sends a one-element array and reads the map back by the same key. Reading
+//     `body.companies` as the record itself yields undefined everywhere.
+//  2. **`li_vanity` is a bare vanity, not a URL** — hence linkedInCompanyPage.
+//     Written into the LinkedIn upload unchanged it is not a link.
+//
+// `headquarter` is a single free-text HQ string rather than a structured city,
+// so it is not mapped to `city`: putting an HQ line into a city column is the
+// kind of near-miss that makes an export look right and match wrong. Country is
+// structured and is mapped. No ticker, no state, no postal code in the schema.
+//
+// One search credit per company found, per their docs.
+
+interface CompanyBody {
+  name?: string | null;
+  li_vanity?: string | null;
+  country?: string | null;
+  industry?: string | null;
+  founded_at?: number | string | null;
+  employees?: number | null;
+}
+
+export const ContactOutCompanyProvider: CompanyProvider = {
+  id: "contactout-company",
+  label: "ContactOut",
+  secretName: "CONTACTOUT_API_KEY",
+  signupUrl: "https://contactout.com/pricing",
+  covers: ["name", "linkedinUrl", "industry", "country", "employeeCount", "foundedYear"],
+
+  async enrich(domain, apiKey): Promise<CompanyResult> {
+    const { status, body } = await vendorFetch(`${BASE}/domain/enrich`, {
+      method: "POST",
+      headers: { token: apiKey },
+      body: { domains: [domain] },
+    });
+
+    if (status < 200 || status >= 300) {
+      const { outcome, detail } = statusOutcome(status, "ContactOut");
+      return { outcome, data: null, creditsUsed: 0, detail };
+    }
+
+    const companies = (body as { companies?: Record<string, CompanyBody | null> } | null)?.companies ?? {};
+    const c = companies[domain];
+    if (!c) return { outcome: "miss", data: null, creditsUsed: 0, detail: "No company matched this domain" };
+
+    // `founded_at` is documented without a type; accept the year either way and
+    // refuse anything that is not a plausible four-digit year.
+    const year = Number(c.founded_at);
+    return {
+      outcome: "hit",
+      // Documented: one search credit per company found.
+      creditsUsed: 1,
+      data: {
+        name: c.name || undefined,
+        industry: c.industry || undefined,
+        linkedinUrl: linkedInCompanyPage(c.li_vanity),
+        employeeCount: typeof c.employees === "number" ? c.employees : undefined,
+        foundedYear: Number.isInteger(year) && year > 1600 && year < 2200 ? year : undefined,
+        country: c.country || undefined,
+      },
+    };
+  },
+};

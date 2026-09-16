@@ -8,6 +8,19 @@ CREATE TABLE IF NOT EXISTS runs (
   -- The natural-language ICP, or the domain when the user chose "use my domain".
   icp_prompt TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending', -- pending|sourcing|enriching|done|failed
+  -- Where the leads come from. 'icp': the agent researches the open web from
+  -- icp_prompt. 'sales_navigator': icp_prompt holds a Sales Navigator search or
+  -- lead-list URL, and the agent reads that list in its own signed-in browser.
+  source TEXT NOT NULL DEFAULT 'icp',
+  -- Which contact fields this run's enrichment buys, comma-separated, in
+  -- FIELDS order. Stored on the run rather than passed along, because four
+  -- paths continue a lead (batch job, single lead, callback, timeout sweep) and
+  -- a choice carried by one of them is a choice the others silently ignore.
+  enrich_fields TEXT NOT NULL DEFAULT 'email,phone',
+  -- 1 when the agent should start enrichment itself once sourcing is done
+  -- (the "include emails" choice). Kept on the row because a retried dispatch
+  -- rebuilds the instruction from it.
+  auto_enrich INTEGER NOT NULL DEFAULT 0,
   lead_count INTEGER NOT NULL DEFAULT 0,
   -- Running total from the attempt ledger; shown as "what this search cost you".
   credits_spent INTEGER NOT NULL DEFAULT 0,
@@ -116,7 +129,7 @@ CREATE TABLE IF NOT EXISTS enrichment_attempts (
   run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
   provider_id TEXT NOT NULL,
   field TEXT NOT NULL,
-  outcome TEXT NOT NULL, -- hit|miss|ineligible|unconfigured|no_credits|error
+  outcome TEXT NOT NULL, -- hit|miss|unmapped|ineligible|unconfigured|no_credits|error|pending
   credits_used INTEGER NOT NULL DEFAULT 0,
   ms INTEGER NOT NULL DEFAULT 0,
   detail TEXT DEFAULT '',
@@ -168,6 +181,46 @@ CREATE TABLE IF NOT EXISTS pending_enrichments (
 
 CREATE INDEX IF NOT EXISTS idx_pending_lead ON pending_enrichments(lead_id);
 CREATE INDEX IF NOT EXISTS idx_pending_run ON pending_enrichments(run_id);
+
+-- Firmographics for one company, keyed on its normalized domain.
+--
+-- Both the store and the cache: there is no separate companies-cache table
+-- because, unlike a person's email, a company record IS the thing we want to
+-- keep. The leads table stays the system of record for *people*; this holds
+-- what is true of the account rather than the contact, so enriching Stripe once
+-- serves every Stripe lead sourced afterwards.
+--
+-- Exists because the LinkedIn Matched Audiences company upload asks for
+-- industry, city, state, zip and the company page URL, and a people-sourcing
+-- app has none of them — it shipped those columns permanently blank.
+--
+-- Deliberately NOT expiring on CACHE_MAX_AGE_DAYS. Contact data decays in
+-- weeks because people change jobs; a company's HQ city, industry and ticker
+-- do not. Re-buying them quarterly would spend credits to rewrite identical
+-- rows. See COMPANY_CACHE_MAX_AGE_DAYS for the longer trade.
+CREATE TABLE IF NOT EXISTS companies (
+  -- Bare, lowercased, no leading `www.` — the same normalization the export's
+  -- GROUP BY uses, so the join cannot miss on a formatting difference.
+  domain TEXT PRIMARY KEY,
+  name TEXT DEFAULT '',
+  linkedin_url TEXT DEFAULT '',
+  industry TEXT DEFAULT '',
+  city TEXT DEFAULT '',
+  state TEXT DEFAULT '',
+  country TEXT DEFAULT '',
+  postal_code TEXT DEFAULT '',
+  -- Empty for the overwhelming majority: only listed companies have one, and a
+  -- fabricated ticker is worse in a LinkedIn upload than an absent one.
+  stock_symbol TEXT DEFAULT '',
+  employee_count INTEGER,
+  founded_year INTEGER,
+  -- Which vendor produced the row, mirroring `*_provider` on leads.
+  provider_id TEXT DEFAULT '',
+  found_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Supports the staleness check on re-enrichment.
+CREATE INDEX IF NOT EXISTS idx_companies_found_at ON companies(found_at);
 
 -- A dated, public reason to talk to a company now. Not a lead: there is no
 -- person here, and the subject is the account.
