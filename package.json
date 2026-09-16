@@ -2,21 +2,26 @@
   "name": "open-prospector",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "dev": "wrangler d1 execute open-prospector-db --local --file=src/server/schema.sql && concurrently -n ui,api -c cyan,green \"vite\" \"wrangler dev --port 8789\"",
-    "build": "vite build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "dev": "node scripts/build-signal-skill.mjs && wrangler d1 execute open-prospector-db --local --file=src/server/schema.sql && concurrently -n ui,api -c cyan,green \"vite\" \"wrangler dev --port 8789\"",
+    "build": "node scripts/build-signal-skill.mjs && vite build",
+    "typecheck": "node scripts/build-signal-skill.mjs && tsc --noEmit",
+    "test": "node scripts/build-signal-skill.mjs && vitest run",
     "seed": "wrangler d1 execute open-prospector-db --local --file=seed.sql"
   },
   "dependencies": {
-    "@clawnify/app": "^0.1.0",
+    "@clawnify/agents": "^0.1.1",
+    "@clawnify/app": "^0.2.1",
     "@clawnify/connections": "^0.3.0",
     "@clawnify/db": "^0.4.1",
     "@clawnify/queue": "^0.1.0",
+    "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.2.2",
     "hono": "^4.6.0",
-    "lucide-react": "^0.469.0",
+    "lucide-react": "^1.17.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.18.1",
@@ -24,7 +29,9 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@clawnify/logokit": "^0.3.0",
     "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^22.20.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",

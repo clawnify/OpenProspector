@@ -3,7 +3,7 @@
 // deliver:false, so the app is the only place progress can surface.
 
 import { AlertTriangle, Check, Loader2, Search, X } from "lucide-react";
-import { Badge, Card, Chip, Empty, Eyebrow, Zone } from "./ui";
+import { Badge, Card, CardTitle, Chip, Empty, Zone } from "./ui";
 import type { Run } from "../api";
 
 function StatusBadge({ run }: { run: Run }) {
@@ -58,17 +58,17 @@ export function RunsPanel({
   onFilterRun: (runId: string | null) => void;
   activeRunId: string | null;
 }) {
+  // An empty state is never inside a card (DESIGN.md → Interaction): the card
+  // appears once there are rows to hold.
   if (runs.length === 0) {
     return (
-      <Card className="mb-6">
-        <Zone>
-          <Eyebrow>Searches</Eyebrow>
-        </Zone>
+      <section className="mb-6">
+        <CardTitle>Searches</CardTitle>
         <Empty
           title="No searches yet"
           hint="Describe an ideal customer above — your agent researches the web and the leads land here."
         />
-      </Card>
+      </section>
     );
   }
 
@@ -76,8 +76,8 @@ export function RunsPanel({
 
   return (
     <Card className="mb-6">
-      <Zone>
-        <Eyebrow right={live > 0 ? `${live} in progress` : undefined}>Searches</Eyebrow>
+      <Zone className="py-3">
+        <CardTitle right={live > 0 ? `${live} in progress` : undefined}>Searches</CardTitle>
       </Zone>
       {runs.map((r) => {
         const active = r.id === activeRunId;
@@ -85,17 +85,18 @@ export function RunsPanel({
           <button
             key={r.id}
             onClick={() => onFilterRun(active ? null : r.id)}
-            className={`flex w-full items-center gap-3 border-b border-border px-4 py-2.5 text-left last:border-b-0 hover:bg-sunken/60 ${
-              active ? "bg-sunken/70" : ""
+            aria-pressed={active}
+            className={`flex h-12 w-full items-center gap-3 border-b border-border px-4 text-left last:border-b-0 hover:bg-muted ${
+              active ? "bg-muted" : ""
             }`}
             title={active ? "Show all leads" : "Show only this search's leads"}
           >
-            <Search size={13} className="shrink-0 text-faint" />
+            <Search size={16} className="shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm">{r.icp_prompt}</span>
               {/* A failure the agent explained is worth surfacing inline — the
                   alternative is a red badge with no way to learn why. */}
-              {r.error ? <span className="block truncate text-xs text-danger">{r.error}</span> : null}
+              {r.error ? <span className="block truncate text-xs text-destructive">{r.error}</span> : null}
             </span>
             <Chip>
               <span className="data">{r.lead_count}</span> leads

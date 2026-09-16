@@ -25,6 +25,61 @@ The savings are not theoretical:
 
 > **Where this *doesn't* win.** Most vendors sell credits on a monthly floor — Findymail's entry plan is $99/mo for 5,000 credits. Below roughly **800 leads/month**, a usage-priced SaaS is genuinely cheaper. This template is for teams doing real volume.
 
+## Signals
+
+Open **Signals → New signal** to choose a starting point:
+
+- **My LinkedIn posts:** one profile's recent and new posts.
+- **Team posts:** posts from up to ten explicitly selected employee profiles.
+- **Specific post:** one LinkedIn post URL, checked for newly observed engagement.
+- **LinkedIn search:** posts and conversations matching a query.
+- **Start from scratch:** a blank, source-neutral prompt. Each finding identifies
+  a Person (verified profile/bio URL) or Company (verified domain), explains why
+  it is a signal, and links to supporting evidence. For example, a magazine
+  article about a company is evidence for a Company signal, not a standalone
+  article result. There is no separate required ICP field.
+
+Choose the agent, describe your ICP for LinkedIn templates, and run once or repeat daily/weekly. The
+first check starts immediately. Recurring work uses that agent's native
+scheduler, with the full versioned procedure embedded in its prompt; no skill
+installation on the agent is needed. The app must have access to the Clawnify
+agents API and the selected agent must support app-created schedule receipts.
+
+LinkedIn templates use the agent's existing logged-in browser and stop at login challenges,
+access restrictions or rate limits. Checks are bounded to ten posts and 100
+accessible engagements. Coverage is reported, not assumed complete. **Newly
+observed is not necessarily newly posted**: previously inaccessible engagement
+can appear later.
+
+Custom prompts use the agent's available research tools and the requested
+sources/time range (30 days when unspecified). Checks inspect up to 30 source
+pages and record up to 100 findings. Company findings remain typed company
+references in the signal feed; they are never added to People. Person findings
+can be explicitly added to People without fabricating a LinkedIn URL. Custom
+findings deduplicate by subject and evidence URL, not by the agent's wording.
+
+Uncheck **Include existing engagement** to establish a hidden first-run
+baseline. A failed check does not complete that baseline. Repeated sightings
+are deduplicated per monitor; different people and comments remain distinct.
+Findings retain evidence, ICP fit and outreach context. **Add to people** is an
+explicit, idempotent review action; monitoring never starts enrichment or outreach.
+
+Saved monitors can be rerun or paused. An optional end date blocks further
+research and pauses the native schedule when it next attempts a check. Pausing
+also blocks new findings if the agent is temporarily unreachable. Interrupting
+a check closes it to writes but does not terminate the agent's session. An
+uncertain dispatch is not automatically retried; inspect or interrupt it first.
+Source/agent/criteria edits are not part of this first version: pause the old
+monitor and create another to change its configuration.
+
+Local tests require Node 22.13+ (`node:sqlite`). `pnpm test`, `pnpm typecheck`,
+and `pnpm build` generate embedded procedures from
+`skills/linkedin-signals/SKILL.md` (the four LinkedIn templates) and
+`skills/custom-signals/SKILL.md` (custom monitors) before running. Both one-off
+dispatch and new schedules attach the procedure selected by monitor kind.
+Existing schedule snapshots are not rewritten automatically. Legacy custom
+monitor ICP text remains available to the agent as additional instructions.
+
 ## Providers
 
 Each field has its own independently-ordered waterfall. The order below is the shipping default; **you can reorder any of it in the UI**, and you should — the optimal order depends on which vendors you already pay for and how your ICP resolves.
