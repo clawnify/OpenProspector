@@ -227,8 +227,10 @@ export function App() {
     }
   }
 
-  const configured = providers.filter((p) => p.configured).length;
-  const unconfigured = providers.length - configured;
+  // Same rule as Settings: a planned vendor has no adapter, so no key would
+  // make it run, and counting it would nag even a fully configured setup.
+  const shipped = providers.filter((p) => p.status !== "planned");
+  const unconfigured = shipped.filter((p) => !p.configured).length;
 
   const location = useLocation();
   const routerNavigate = useNavigate();
