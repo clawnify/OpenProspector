@@ -204,12 +204,16 @@ Two consequences worth knowing. A deferred vendor placed *early* in a waterfall 
 |----------|-----|
 | Bytemine | Shipped once, now parked. `api.bytemine.ai` is a CNAME onto an AWS API Gateway custom domain that stopped serving TLS for that hostname on 2026-09-01: against the same IP in the same second, the gateway's own SNI name completes a TLS 1.3 handshake while `api.bytemine.ai` gets alert 40. Server-side and client-independent, reproduced from three TLS stacks, and still failing the same way on 2026-09-02. The adapter and its tests are kept, so reviving it is one line once the handshake works again. |
 
+### Adding your keys
+
+On Clawnify, add each key in the dashboard under **Settings → Environment variables**. The name has to match exactly: the app's **Settings** screen lists every provider with the variable name it reads (`FINDYMAIL_API_KEY`, `TOMBA_API_KEY`, …). A new key takes effect the next time the app is deployed. Running locally, the same names go in `.dev.vars` (see [Quickstart](#quickstart)).
+
 ### Keys that are not a plain token
 
 - **Forager** puts the account id in the URL path, so its secret is stored as `FORAGER_API_KEY=accountId:apiKey`.
 - **Tomba** authenticates with two headers (`X-Tomba-Key` and `X-Tomba-Secret`), so its secret is stored as `TOMBA_API_KEY=key:secret`.
 - **Snov.io** uses OAuth client credentials, so its secret is stored as `SNOV_API_KEY=clientId:clientSecret`; the app mints and caches the short-lived bearer token itself.
-- Every other vendor takes an opaque key. The settings screen shows the expected shape next to each field.
+- Every other vendor takes an opaque key. The settings screen shows each provider's variable name, and for the three above, the value's shape underneath it.
 
 ### What the vendor's plan has to include
 

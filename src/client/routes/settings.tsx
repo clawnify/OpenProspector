@@ -140,13 +140,22 @@ export function Settings({
         <Zone>
           <CardTitle right={`${shipped.length - missing.length}/${shipped.length} configured`}>Provider keys</CardTitle>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Keys are read from the platform's secret store, never held by this app. Every provider is optional — the
-            waterfall skips any vendor without a key and records it in the attempt log, so gaps are visible rather than
-            silent.
+            Add each key in your Clawnify dashboard under{" "}
+            <a
+              href="https://app.clawnify.com/settings/environment-variables"
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              Settings → Environment variables
+            </a>
+            , named exactly as shown on its row. A new key takes effect the next time this app is deployed. Keys are
+            read from the platform's secret store, never held by this app. Every provider is optional — the waterfall
+            skips any vendor without a key and records it in the attempt log, so gaps are visible rather than silent.
           </p>
         </Zone>
         {providers.map((p) => (
-          <div key={p.id} className="flex h-12 items-center gap-3 border-b border-border px-4">
+          <div key={p.id} className="flex min-h-12 items-center gap-3 border-b border-border px-4 py-2">
             <Favicon domain={p.signup_url} size={14} />
             <span className="flex-1 min-w-0">
               <span className="block text-sm font-medium">{p.label}</span>
@@ -154,11 +163,18 @@ export function Settings({
                   by keyboard and screen reader, and "why can't I use this?" is
                   the only question this row has to answer. */}
               {p.blocked_by ? <span className="block text-xs text-muted-foreground">{p.blocked_by}</span> : null}
+              {/* The key's shape, where it is not just an opaque token. Without
+                  this a compound secret looks like a normal key and fails at the
+                  first call with a message the user never sees. It sits beside
+                  the name, never in place of it: the name is what the user has
+                  to type into the dashboard. */}
+              {p.status !== "planned" && p.key_format ? (
+                <span className="block text-xs text-muted-foreground">
+                  Value: <span className="data text-foreground">{p.key_format}</span>
+                </span>
+              ) : null}
             </span>
-            {/* The key's shape, where it is not just an opaque token. Without
-                this a compound secret looks like a normal key and fails at the
-                first call with a message the user never sees. */}
-            <Chip>{p.status === "planned" ? "—" : (p.key_format ?? p.secret_name)}</Chip>
+            <Chip>{p.status === "planned" ? "—" : p.secret_name}</Chip>
             {p.status === "planned" ? (
               // No key field, because a key would not make it run. The badge is
               // what keeps the roadmap from reading as a shipped capability.
