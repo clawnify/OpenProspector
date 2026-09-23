@@ -155,45 +155,51 @@ export function Settings({
           </p>
         </Zone>
         {providers.map((p) => (
-          <div key={p.id} className="flex min-h-12 items-center gap-3 border-b border-border px-4 py-2">
+          <div key={p.id} className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-2">
             <Favicon domain={p.signup_url} size={14} />
-            <span className="flex-1 min-w-0">
+            <span className="min-w-[8rem] flex-1">
               <span className="block text-sm font-medium">{p.label}</span>
               {/* Visible rather than a title tooltip: a tooltip is unreachable
                   by keyboard and screen reader, and "why can't I use this?" is
                   the only question this row has to answer. */}
               {p.blocked_by ? <span className="block text-xs text-muted-foreground">{p.blocked_by}</span> : null}
-              {/* The key's shape, where it is not just an opaque token. Without
-                  this a compound secret looks like a normal key and fails at the
-                  first call with a message the user never sees. It sits beside
-                  the name, never in place of it: the name is what the user has
-                  to type into the dashboard. */}
-              {p.status !== "planned" && p.key_format ? (
-                <span className="block text-xs text-muted-foreground">
-                  Value: <span className="data text-foreground">{p.key_format}</span>
-                </span>
-              ) : null}
             </span>
-            <Chip>{p.status === "planned" ? "—" : p.secret_name}</Chip>
-            {p.status === "planned" ? (
-              // No key field, because a key would not make it run. The badge is
-              // what keeps the roadmap from reading as a shipped capability.
-              <Badge tone="warning">Planned</Badge>
-            ) : p.configured ? (
-              typeof p.credits_remaining === "number" ? (
-                <Badge tone="success">
-                  <span className="data">{p.credits_remaining.toLocaleString()}</span> credits
-                </Badge>
+            {/* The key's shape, where it is not just an opaque token. Without
+                this a compound secret looks like a normal key and fails at the
+                first call with a message the user never sees. It sits under
+                the name, never in place of it: the name is what the user has
+                to type into the dashboard, and the value is what goes in it. */}
+            {/* Key details and status travel together: on a narrow screen they
+                wrap as one block under the provider, right-aligned. */}
+            <div className="ml-auto flex min-w-0 items-center gap-3">
+              <span className="flex min-w-0 max-w-[26rem] flex-col items-end gap-0.5 text-right">
+                <Chip>{p.status === "planned" ? "—" : p.secret_name}</Chip>
+                {p.status !== "planned" && p.key_format ? (
+                  <span className="text-xs text-muted-foreground">
+                    Value: <span className="data text-foreground">{p.key_format}</span>
+                  </span>
+                ) : null}
+              </span>
+              {p.status === "planned" ? (
+                // No key field, because a key would not make it run. The badge is
+                // what keeps the roadmap from reading as a shipped capability.
+                <Badge tone="warning">Planned</Badge>
+              ) : p.configured ? (
+                typeof p.credits_remaining === "number" ? (
+                  <Badge tone="success">
+                    <span className="data">{p.credits_remaining.toLocaleString()}</span> credits
+                  </Badge>
+                ) : (
+                  <Badge tone="success">Configured</Badge>
+                )
               ) : (
-                <Badge tone="success">Configured</Badge>
-              )
-            ) : (
-              <a href={p.signup_url} target="_blank" rel="noreferrer">
-                <Badge tone="warning">
-                  <CircleAlert size={11} /> Get a key
-                </Badge>
-              </a>
-            )}
+                <a href={p.signup_url} target="_blank" rel="noreferrer">
+                  <Badge tone="warning">
+                    <CircleAlert size={11} /> Get a key
+                  </Badge>
+                </a>
+              )}
+            </div>
           </div>
         ))}
         <Zone className="bg-muted">
