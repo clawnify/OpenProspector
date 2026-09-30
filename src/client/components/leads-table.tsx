@@ -2,9 +2,9 @@
 // "where did this email come from?" is answerable without opening anything.
 
 import { useEffect, useRef, useState } from "react";
-import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RefreshCw, Search, User } from "lucide-react";
-import { Badge, Button, Chip, Empty, Favicon } from "./ui";
-import type { Lead, Provider } from "../api";
+import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RedoDot, RefreshCw, Search, User } from "lucide-react";
+import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger } from "./ui";
+import type { Lead, OlderFind, Provider } from "../api";
 
 function StatusBadge({ lead }: { lead: Lead }) {
   if (lead.enrich_status === "running") {
@@ -32,6 +32,41 @@ function StatusBadge({ lead }: { lead: Lead }) {
     </Badge>
   ) : (
     <Badge tone="warning">No match</Badge>
+  );
+}
+
+/**
+ * "+N" next to an email: the addresses it replaced when the user jumped to the
+ * next provider. Plain text rather than mailto links, because the user already
+ * moved past them.
+ */
+function OlderFinds({ finds, domainById }: { finds: OlderFind[]; domainById: Map<string, string> }) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        className="rounded-xs bg-muted px-1.5 py-0.5 text-[0.6875rem] font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground"
+        aria-label={`Show ${finds.length} earlier email${finds.length === 1 ? "" : "s"}`}
+        title="Earlier finds"
+      >
+        +{finds.length}
+      </PopoverTrigger>
+      <PopoverContent className="w-72">
+        <p className="px-3 pb-1 pt-2 text-xs text-muted-foreground">Earlier finds</p>
+        <ul>
+          {finds.map((f) => (
+            <li key={`${f.value}|${f.replaced_at}`} className="flex flex-col items-start gap-1 px-3 py-2">
+              <span className="break-all text-sm">{f.value}</span>
+              {f.provider_id ? (
+                <Chip>
+                  <Favicon domain={domainById.get(f.provider_id)} />
+                  via {f.provider_id}
+                </Chip>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -134,6 +169,7 @@ export function LeadsTable({
   onSearch,
   onPage,
   onEnrich,
+  onJump,
 }: {
   leads: Lead[];
   providers: Provider[];
@@ -145,6 +181,7 @@ export function LeadsTable({
   onSearch: (v: string) => void;
   onPage: (p: number) => void;
   onEnrich: (id: string, refresh: boolean) => void;
+  onJump: (id: string) => void;
 }) {
   // Provider id -> signup host, so an attribution chip can show the vendor mark.
   const domainById = new Map(providers.map((p) => [p.id, p.signup_url]));
@@ -198,9 +235,12 @@ export function LeadsTable({
                   <td className="px-4 py-2">
                     {l.email ? (
                       <div className="flex flex-col items-start gap-1">
-                        <a href={`mailto:${l.email}`} className="text-info hover:underline">
-                          {l.email}
-                        </a>
+                        <span className="flex items-center gap-1.5">
+                          <a href={`mailto:${l.email}`} className="text-info hover:underline">
+                            {l.email}
+                          </a>
+                          {l.email_older?.length ? <OlderFinds finds={l.email_older} domainById={domainById} /> : null}
+                        </span>
                         {/* Attribution on the cell itself — the waterfall is
                             only trustworthy if you can see who answered. */}
                         {l.email_provider ? (
@@ -218,16 +258,32 @@ export function LeadsTable({
                     <StatusBadge lead={l} />
                   </td>
                   <td className="px-4 py-2 pr-6 text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => onEnrich(l.id, Boolean(l.email))}
-                      disabled={busyId === l.id}
-                      title={l.email ? "Re-buy from vendors (costs credits)" : "Enrich (uses cache when possible)"}
-                      aria-label={l.email ? "Re-enrich" : "Enrich"}
-                    >
-                      <RefreshCw size={16} className={busyId === l.id ? "animate-spin" : ""} />
-                    </Button>
+                    {/* A found email is not retried, it is jumped past: the
+                        same waterfall from the top would stop at the same
+                        vendor and buy the same answer again. */}
+                    {l.enrich_status === "done" && l.email ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => onJump(l.id)}
+                        disabled={busyId === l.id}
+                        title="Try the next provider in your list (costs credits)"
+                        aria-label="Try next provider"
+                      >
+                        {busyId === l.id ? <Loader2 size={16} className="animate-spin" /> : <RedoDot size={16} />}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => onEnrich(l.id, Boolean(l.email))}
+                        disabled={busyId === l.id}
+                        title={l.email ? "Re-buy from vendors (costs credits)" : "Enrich (uses cache when possible)"}
+                        aria-label={l.email ? "Re-enrich" : "Enrich"}
+                      >
+                        <RefreshCw size={16} className={busyId === l.id ? "animate-spin" : ""} />
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}
