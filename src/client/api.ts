@@ -23,6 +23,8 @@ export interface Lead {
   enrich_status: string;
   created_at: string;
   updated_at: string;
+  /** Server-computed: 1 when the lead sat in `running` past the window, so its pass was cut off. */
+  stale: number;
 }
 
 export interface Signal {
@@ -220,9 +222,13 @@ export const api = {
 
   lead: (id: string) => req<{ lead: Lead; attempts: Attempt[] }>(`/api/leads/${id}`),
 
-  /** `refresh` re-buys from the vendors; the default reuses the cache at no cost. */
+  /**
+   * `refresh` re-buys from the vendors; the default reuses the cache at no cost.
+   * Normally queued: the lead comes back `running` and the leads poll picks up
+   * the result. Only a deployment without the queue (local dev) answers inline.
+   */
   enrichLead: (id: string, refresh = false) =>
-    req<{ lead: Lead; credits_used: number; cached: boolean }>(
+    req<{ lead: Lead; queued: true } | { lead: Lead; queued: false; credits_used: number; cached: boolean }>(
       `/api/leads/${id}/enrich${refresh ? "?refresh=true" : ""}`,
       { method: "POST" },
     ),
