@@ -6,7 +6,17 @@ import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail
 import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger } from "./ui";
 import type { Lead, OlderFind, Provider } from "../api";
 
+/**
+ * `running` long past the window: whatever was enriching the lead stopped
+ * without finishing, and it will not move on its own. A spinner would promise
+ * progress that is not happening, so it reads as interrupted and can be retried.
+ */
+function interrupted(lead: Lead): boolean {
+  return lead.enrich_status === "running" && lead.stale === 1;
+}
+
 function StatusBadge({ lead }: { lead: Lead }) {
+  if (interrupted(lead)) return <Badge tone="warning">Interrupted</Badge>;
   if (lead.enrich_status === "running") {
     return (
       <Badge tone="neutral">
@@ -165,7 +175,7 @@ export function LeadsTable({
   page,
   limit,
   search,
-  busyId,
+  busyIds,
   onSearch,
   onPage,
   onEnrich,
@@ -177,7 +187,7 @@ export function LeadsTable({
   page: number;
   limit: number;
   search: string;
-  busyId: string | null;
+  busyIds: ReadonlySet<string>;
   onSearch: (v: string) => void;
   onPage: (p: number) => void;
   onEnrich: (id: string, refresh: boolean) => void;
@@ -260,28 +270,38 @@ export function LeadsTable({
                   <td className="px-4 py-2 pr-6 text-right">
                     {/* A found email is not retried, it is jumped past: the
                         same waterfall from the top would stop at the same
-                        vendor and buy the same answer again. */}
+                        vendor and buy the same answer again. An interrupted
+                        pass retries from the cache: what it had already
+                        resolved comes back free and only the rest is bought.
+                        A lead still running has its pass in flight, and a
+                        second click would only be answered with that pass. */}
                     {l.enrich_status === "done" && l.email ? (
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={() => onJump(l.id)}
-                        disabled={busyId === l.id}
+                        disabled={busyIds.has(l.id)}
                         title="Try the next provider in your list (costs credits)"
                         aria-label="Try next provider"
                       >
-                        {busyId === l.id ? <Loader2 size={16} className="animate-spin" /> : <RedoDot size={16} />}
+                        {busyIds.has(l.id) ? <Loader2 size={16} className="animate-spin" /> : <RedoDot size={16} />}
                       </Button>
                     ) : (
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => onEnrich(l.id, Boolean(l.email))}
-                        disabled={busyId === l.id}
-                        title={l.email ? "Re-buy from vendors (costs credits)" : "Enrich (uses cache when possible)"}
-                        aria-label={l.email ? "Re-enrich" : "Enrich"}
+                        onClick={() => onEnrich(l.id, Boolean(l.email) && !interrupted(l))}
+                        disabled={busyIds.has(l.id) || (l.enrich_status === "running" && !interrupted(l))}
+                        title={
+                          interrupted(l)
+                            ? "Retry. The last pass was interrupted (uses cache when possible)"
+                            : l.email
+                              ? "Re-buy from vendors (costs credits)"
+                              : "Enrich (uses cache when possible)"
+                        }
+                        aria-label={interrupted(l) ? "Retry enrichment" : l.email ? "Re-enrich" : "Enrich"}
                       >
-                        <RefreshCw size={16} className={busyId === l.id ? "animate-spin" : ""} />
+                        <RefreshCw size={16} className={busyIds.has(l.id) ? "animate-spin" : ""} />
                       </Button>
                     )}
                   </td>

@@ -15,6 +15,12 @@
         ]
       },
       {
+        "path": "/api/jobs/enrich-lead",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
         "path": "/api/jobs/sweep-pending",
         "methods": [
           "POST"

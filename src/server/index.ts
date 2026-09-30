@@ -81,6 +81,14 @@ const LeadSchema = z
     enrich_status: z.string(),
     created_at: z.string(),
     updated_at: z.string(),
+    /**
+     * Computed by the server, not stored, the same way a run's `stale` is: a
+     * lead still `running` long after anything touched it. Whatever was
+     * enriching it died without finishing, so it will not move on its own.
+     */
+    stale: z.number().int().openapi({
+      description: "1 when the lead has sat in `running` past the stranding window: the pass enriching it was cut off. Re-run it with POST /api/leads/{id}/enrich.",
+    }),
   })
   .openapi("Lead");
 
@@ -163,6 +171,17 @@ const STALE_AFTER = "-15 minutes";
  */
 const RUN_SELECT =
   `*, (CASE WHEN status IN ('sourcing', 'enriching') AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
+
+/**
+ * The same for leads, bound to STRANDED_AFTER (the enrichment section below),
+ * the window the batch job already uses to reclaim a lead left `running`.
+ *
+ * A lead enriched on its own, outside any run, has no batch job to reclaim it,
+ * so without this a closed tab or a dead delivery left it spinning as
+ * "Enriching" forever. Flagged, it reads as interrupted and can be re-run.
+ */
+const LEAD_SELECT =
+  `*, (CASE WHEN enrich_status = 'running' AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
 
 function isField(v: string): v is EnrichField {
   return (FIELDS as string[]).includes(v);
@@ -1080,7 +1099,8 @@ app.openapi(listLeads, async (c) => {
 
   const whereSQL = where.length ? " WHERE " + where.join(" AND ") : "";
   const countRow = await get<{ total: number }>("SELECT COUNT(*) AS total FROM leads" + whereSQL, params);
-  const leads = await query<LeadRow>(`SELECT * FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`, [
+  const leads = await query<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`, [
+    STRANDED_AFTER,
     ...params,
     limit,
     offset,
@@ -1313,7 +1333,7 @@ const getLead = createRoute({
 
 app.openapi(getLead, async (c) => {
   const id = c.req.valid("param").id;
-  const lead = await get<LeadRow>("SELECT * FROM leads WHERE id = ?", [id]);
+  const lead = await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]);
   if (!lead) return c.json({ error: "Not found" }, 404);
   // Bounded: a single lead's waterfall is at most a few rows per field, but the
   // cap keeps a pathological retry loop out of the agent's context.
@@ -1518,7 +1538,7 @@ const reEnrichLead = createRoute({
   method: "post",
   path: "/api/leads/{id}/enrich",
   tags: ["Enrichment"],
-  summary: "Run the waterfall for a single lead",
+  summary: "Queue the waterfall for a single lead",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({
@@ -1528,7 +1548,14 @@ const reEnrichLead = createRoute({
     }),
   },
   responses: {
-    200: { description: "Enriched", content: { "application/json": { schema: z.object({ lead: LeadSchema, credits_used: z.number().int(), cached: z.boolean() }) } } },
+    202: {
+      description: "Queued. The lead comes back `running`: poll GET /api/leads/{id} until it is `done`, `waiting` or `failed`. Also the answer, with no second pass started, when the lead is already being enriched.",
+      content: { "application/json": { schema: z.object({ lead: LeadSchema, queued: z.literal(true) }) } },
+    },
+    200: {
+      description: "Enriched inline, because this deployment has no queue (local development only)",
+      content: { "application/json": { schema: z.object({ lead: LeadSchema, queued: z.literal(false), credits_used: z.number().int(), cached: z.boolean() }) } },
+    },
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1543,15 +1570,86 @@ app.openapi(reEnrichLead, async (c) => {
   // contact we already own.
   const refresh = c.req.valid("query").refresh === "true";
 
-  // A lead still parked on a callback is re-run from scratch; its old pause is
-  // dropped first so a late answer to it cannot land on top of this pass.
-  await cancelPending(id);
-  await run("UPDATE leads SET enrich_status = 'running', updated_at = datetime('now') WHERE id = ?", [id]);
-  const outcome = await enrichLead({ ...lead, enrich_status: "running" }, c.env as EnrichEnv, await enrichOptions(c, refresh));
+  // Claim the lead in one statement, so a double click cannot start two paid
+  // passes over it: the second finds it `running` and fresh, changes nothing,
+  // and is answered with the pass already in flight. A lead `running` past
+  // STRANDED_AFTER is claimable again, which is how an interrupted one re-runs.
+  const claim = await run(
+    `UPDATE leads SET enrich_status = 'running', updated_at = datetime('now')
+      WHERE id = ? AND NOT (enrich_status = 'running' AND updated_at >= datetime('now', ?))`,
+    [id, STRANDED_AFTER],
+  );
+  const current = async () => (await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]))!;
+  if (claim.changes === 0) return c.json({ lead: await current(), queued: true as const }, 202);
 
-  // Non-null: the row was read and updated above in the same request.
-  const updated = (await get<LeadRow>("SELECT * FROM leads WHERE id = ?", [id]))!;
-  return c.json({ lead: updated, credits_used: outcome.credits, cached: outcome.cached }, 200);
+  // A lead still parked on a callback is re-run from scratch; its old pause is
+  // dropped so a late answer to it cannot land on top of this pass. After the
+  // claim, not before: a pass in flight writes its pause row a moment before
+  // it marks the lead `waiting`, and dropping that row would leave the lead
+  // waiting on a callback nothing can deliver.
+  await cancelPending(id);
+
+  // The waterfall runs in a queued job, not in this request. Run here, it died
+  // with the request: a closed tab or a reload part way through cancelled it,
+  // and the lead stayed `running` with nothing left to finish it.
+  //
+  // No idempotency key: the claim above is what stops duplicates. A key made
+  // from updated_at, as the batch uses, would collide for a pass that finished
+  // inside the second it started, and the queue would hand the next claim the
+  // finished job instead of running a new one.
+  try {
+    await enqueueJob(c.env, {
+      targetUrl: `${new URL(c.req.url).origin}/api/jobs/enrich-lead`,
+      payload: { leadId: id, refresh },
+      maxAttempts: 3,
+    });
+  } catch {
+    // shortcut: no queue, so run inline as before. That is local `wrangler dev`,
+    // which has no CLAWNIFY_TOKEN, or a queue outage. Inline is the path that
+    // strands a lead when the request dies, so `stale` is what surfaces it here.
+    const outcome = await enrichLead({ ...lead, enrich_status: "running" }, c.env as EnrichEnv, await enrichOptions(c, refresh));
+    return c.json({ lead: await current(), queued: false as const, credits_used: outcome.credits, cached: outcome.cached }, 200);
+  }
+  return c.json({ lead: await current(), queued: true as const }, 202);
+});
+
+/**
+ * Queue delivery target for one lead, the per-lead twin of /api/jobs/enrich.
+ * The enrich route above claims the lead and returns at once, and this runs its
+ * waterfall where no browser can cancel it.
+ *
+ * Machine-to-machine, so app.post rather than app.openapi, and listed under
+ * `public_routes` in clawnify.json for the same reason as the batch target:
+ * the queue delivers from outside the platform perimeter. verifyDelivery is
+ * what makes exposing it safe.
+ */
+app.post("/api/jobs/enrich-lead", async (c) => {
+  const rawBody = await c.req.text();
+  const ok = await verifyDelivery(rawBody, {
+    signature: c.req.header("X-Queue-Signature") ?? null,
+    timestamp: c.req.header("X-Queue-Timestamp") ?? null,
+    keyId: c.req.header("X-Queue-Key-Id") ?? null,
+  });
+  if (!ok) return c.json({ error: "Invalid delivery signature" }, 401);
+
+  let payload: { leadId?: string; refresh?: boolean };
+  try {
+    payload = JSON.parse(rawBody) as { leadId?: string; refresh?: boolean };
+  } catch {
+    return c.json({ error: "Malformed payload" }, 400);
+  }
+  if (!payload.leadId) return c.json({ error: "Missing leadId" }, 400);
+
+  // Only a lead still `running` is this job's to finish. Anything else was
+  // deleted, or settled by an earlier delivery whose acknowledgement was lost,
+  // and running it again would buy a refresh twice. The queue redelivers only
+  // after a failed attempt, never alongside a live one, so a lead still
+  // `running` here is one that attempt left unfinished.
+  const lead = await get<Record<string, unknown>>("SELECT * FROM leads WHERE id = ?", [payload.leadId]);
+  if (!lead || lead.enrich_status !== "running") return c.json({ ok: true, skipped: true }, 200);
+
+  const outcome = await enrichLead(lead, c.env as EnrichEnv, await enrichOptions(c, payload.refresh === true));
+  return c.json({ ok: true, status: outcome.status, credits_used: outcome.credits }, 200);
 });
 
 const nextProvider = createRoute({
@@ -1595,7 +1693,7 @@ app.openapi(nextProvider, async (c) => {
   }
   const r = await tryNextProvider(lead, "email", c.env as EnrichEnv, await enrichOptions(c));
   // Non-null: the row was read above in the same request.
-  const [updated] = await withOlderEmails([(await get<LeadRow>("SELECT * FROM leads WHERE id = ?", [id]))!]);
+  const [updated] = await withOlderEmails([(await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]))!]);
   return c.json({ lead: updated, outcome: r.outcome, provider_id: r.providerId, asked: r.asked, credits_used: r.credits }, 200);
 });
 
@@ -1805,7 +1903,9 @@ app.openapi(pushLeads, async (c) => {
   if (body.only_with_email !== false) where.push("email != ''");
   const whereSQL = where.length ? " WHERE " + where.join(" AND ") : "";
 
-  const leads = await query<LeadRow>(
+  // The stored row, without the computed `stale`: this payload goes to a
+  // destination outside the app, and its shape stays what it always was.
+  const leads = await query<Omit<LeadRow, "stale">>(
     `SELECT * FROM leads${whereSQL} ORDER BY created_at DESC, id LIMIT ?`,
     [...params, limit],
   );

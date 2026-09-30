@@ -69,7 +69,10 @@ export function App() {
   const [mode, setMode] = useState<"icp" | "sales_nav">("icp");
   const [listUrl, setListUrl] = useState("");
   const [includeEmails, setIncludeEmails] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // A set, not one id: with a single slot, clicking a second row while the
+  // first was still answering took the spinner off the first, which then
+  // looked hung.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [dispatching, setDispatching] = useState(false);
   // Only set when dispatch failed: the brief the user can hand over by hand,
@@ -119,7 +122,10 @@ export function App() {
     runs.some((r) => !r.stale && (r.status === "sourcing" || r.status === "enriching")) ||
     // A lead parked on a vendor callback resolves out of band, with no run to
     // watch when it was enriched by hand — so it is a live signal on its own.
-    leads.some((l) => l.enrich_status === "waiting");
+    // So is one enriched by hand: its waterfall runs in a queued job now, and
+    // this poll is how the row learns it finished. A stale one has stopped and
+    // will not change on its own.
+    leads.some((l) => l.enrich_status === "waiting" || (l.enrich_status === "running" && !l.stale));
   useEffect(() => {
     if (!hasLiveRun) return;
     const t = setInterval(() => {
@@ -146,26 +152,32 @@ export function App() {
   }
 
   async function enrich(id: string, refresh: boolean) {
-    setBusyId(id);
+    setBusyIds((s) => new Set(s).add(id));
     try {
       const r = await api.enrichLead(id, refresh);
       setNotice({
         tone: "success",
-        text: r.cached
-          ? "Resolved from cache — no credits spent."
-          : `Enriched. ${r.credits_used} credit${r.credits_used === 1 ? "" : "s"} spent.`,
+        text: r.queued
+          ? "Enriching. It keeps going if you leave this page."
+          : r.cached
+            ? "Resolved from cache. No credits spent."
+            : `Enriched. ${r.credits_used} credit${r.credits_used === 1 ? "" : "s"} spent.`,
       });
       await Promise.all([loadLeads(), loadProviders()]);
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
     } finally {
-      setBusyId(null);
+      setBusyIds((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
     }
   }
 
   /** A found email the user does not trust: ask the next provider in the waterfall. */
   async function jump(id: string) {
-    setBusyId(id);
+    setBusyIds((s) => new Set(s).add(id));
     try {
       const r = await api.nextProvider(id);
       const label = providers.find((p) => p.id === r.provider_id)?.label ?? r.provider_id;
@@ -183,7 +195,11 @@ export function App() {
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
     } finally {
-      setBusyId(null);
+      setBusyIds((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
     }
   }
 
@@ -494,7 +510,7 @@ export function App() {
                   page={page}
                   limit={limit}
                   search={search}
-                  busyId={busyId}
+                  busyIds={busyIds}
                   onSearch={(v) => {
                     setSearch(v);
                     setPage(1);
