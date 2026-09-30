@@ -11,7 +11,7 @@
 import { enqueueJob, type QueueEnv } from "@clawnify/queue";
 import type { ConnectionsEnv } from "@clawnify/connections";
 import { get, query, run } from "./db.js";
-import { d1Cache, d1CompanyStore, recordAttempts } from "./cache.js";
+import { d1Cache, d1CompanyStore, forgetCached, recordAttempts } from "./cache.js";
 import { runCompanyWaterfall } from "./providers/company.js";
 import { applyDeferredResult, providerById, runWaterfall } from "./providers/index.js";
 import type { EnrichField, EnrichResult, LeadInput, PendingWaterfall, WaterfallResult } from "./providers/types.js";
@@ -221,6 +221,82 @@ export async function finishRunIfDrained(runId: string | null): Promise<void> {
   );
 }
 
+export interface NextProviderOutcome {
+  /**
+   * `found`: another provider gave a new value, which is now current, and the
+   * one it replaced is kept as an older find. `same`: the answer was a value
+   * this lead already has, current or older, so nothing changed and the next
+   * jump asks past that provider. `none`: nobody asked found anything.
+   */
+  outcome: "found" | "same" | "none";
+  providerId: string | null;
+  /** Providers actually called. Zero means nobody was left to ask, which reads differently from "asked, found nothing". */
+  asked: number;
+  credits: number;
+}
+
+/**
+ * "Not good enough, ask the next one": one field's waterfall over the providers
+ * in the user's order that have not answered for this lead yet. Skipped are the
+ * provider behind the current value, those behind its older finds, and those
+ * the ledger shows already hit or missed for this lead, because asking them
+ * again buys the same answer twice. A provider that errored, had no key or could
+ * not take the lead's inputs never answered, so it gets its turn, even one that
+ * sits earlier in the order than the current value's provider.
+ *
+ * The cache is not read, since it would hand back the very value being skipped.
+ * The lead's status is left alone, so a jump that dies with its request leaves
+ * the lead as it was rather than stranded at `running`.
+ *
+ * shortcut: in-band vendors only. A callback vendor's answer comes back through
+ * resumeLead, which carries on with the full configured order and then the
+ * lead's later fields. Reaching Dropcontact or Zeliq from here needs this skip
+ * list stored on pending_enrichments first.
+ */
+export async function tryNextProvider(
+  lead: Record<string, unknown>,
+  field: EnrichField,
+  env: EnrichEnv,
+  opts: EnrichOptions,
+): Promise<NextProviderOutcome> {
+  const leadId = String(lead.id);
+  const answered = await query<{ provider_id: string }>(
+    `SELECT provider_id FROM enrichment_attempts WHERE lead_id = ? AND field = ? AND outcome IN ('hit', 'miss', 'unmapped')
+     UNION SELECT provider_id FROM lead_finds WHERE lead_id = ? AND field = ?`,
+    [leadId, field, leadId, field],
+  );
+  const skip = new Set([String(lead[`${field}_provider`] || ""), ...answered.map((r) => r.provider_id)]);
+  const order = opts.orders[field].filter((id) => !skip.has(id) && !providerById(id)?.deferred?.includes(field));
+
+  // The value being replaced is not an input. Several vendors look a person up
+  // by email when one is given, and would hand the same address straight back.
+  const input = field === "email" ? { ...leadInput(lead), email: undefined } : leadInput(lead);
+  const res = await runWaterfall(field, input, env, { order, cache: d1Cache, refresh: true });
+  await recordAttempts(leadId, lead.run_id ? String(lead.run_id) : null, res.attempts);
+  const credits = res.attempts.reduce((n, a) => n + a.creditsUsed, 0);
+  const asked = res.attempts.filter((a) => a.outcome !== "unconfigured" && a.outcome !== "ineligible").length;
+
+  let outcome: NextProviderOutcome["outcome"] = "none";
+  if (res.value) {
+    const current = String(lead[field] || "");
+    const older = await get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM lead_finds WHERE lead_id = ? AND field = ? AND lower(value) = lower(?)",
+      [leadId, field, res.value],
+    );
+    if (res.value.toLowerCase() === current.toLowerCase() || (older?.n ?? 0) > 0) {
+      outcome = "same";
+    } else {
+      await writeField(lead, field, { value: res.value, verified: res.verified, providerId: res.providerId ?? "" });
+      outcome = "found";
+    }
+  }
+  // Whatever happened, the cache ends up holding the value the lead shows or
+  // nothing. A verified answer from this pass was cached by the runner, and it
+  // may be a value the user already skipped.
+  await forgetCached(field, input, String(lead[field] || ""));
+  return { outcome, providerId: res.providerId, asked, credits };
+}
+
 // ── internals ───────────────────────────────────────────────────────
 
 function callbackUrl(origin: string | null, token: string): string | undefined {
@@ -266,15 +342,42 @@ async function settleField(
   }
 
   if (res.value) {
-    await run(`UPDATE leads SET ${field} = ?, ${field}_verified = ?, ${field}_provider = ?, updated_at = datetime('now') WHERE id = ?`, [
-      res.value,
-      res.verified ? 1 : 0,
-      res.providerId ?? "",
-      leadId,
-    ]);
-    row[field] = res.value;
+    await writeField(row, field, { value: res.value, verified: res.verified, providerId: res.providerId ?? "" });
   }
   return { status: "done", credits, cached: res.cached };
+}
+
+/**
+ * Put a resolved value on the lead. A different value it replaces moves to
+ * lead_finds instead of being overwritten, so neither a jump to the next
+ * provider nor a re-buy that lands on another vendor throws an earlier answer
+ * away. Every resolved value reaches a lead through here, which is what keeps
+ * the "+N older finds" in the table complete.
+ */
+async function writeField(
+  row: Record<string, unknown>,
+  field: EnrichField,
+  hit: { value: string; verified: boolean; providerId: string },
+): Promise<void> {
+  const leadId = String(row.id);
+  const previous = String(row[field] || "");
+  if (previous && previous.toLowerCase() !== hit.value.toLowerCase()) {
+    // A value the lead held before is current again, not an older find.
+    await run("DELETE FROM lead_finds WHERE lead_id = ? AND field = ? AND lower(value) = lower(?)", [leadId, field, hit.value]);
+    await run(
+      "INSERT INTO lead_finds (id, lead_id, field, value, verified, provider_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [crypto.randomUUID(), leadId, field, previous, Number(row[`${field}_verified`]) === 1 ? 1 : 0, String(row[`${field}_provider`] || "")],
+    );
+  }
+  await run(`UPDATE leads SET ${field} = ?, ${field}_verified = ?, ${field}_provider = ?, updated_at = datetime('now') WHERE id = ?`, [
+    hit.value,
+    hit.verified ? 1 : 0,
+    hit.providerId,
+    leadId,
+  ]);
+  row[field] = hit.value;
+  row[`${field}_verified`] = hit.verified ? 1 : 0;
+  row[`${field}_provider`] = hit.providerId;
 }
 
 async function finishLead(

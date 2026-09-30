@@ -139,6 +139,24 @@ CREATE TABLE IF NOT EXISTS enrichment_attempts (
 CREATE INDEX IF NOT EXISTS idx_attempts_lead ON enrichment_attempts(lead_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_run ON enrichment_attempts(run_id);
 
+-- Values a lead's field held before a later provider replaced them: the "+N"
+-- next to an email in the leads table. The lead row keeps only the current
+-- value, so without this a jump to the next provider would throw the earlier
+-- answer away. Written by writeField() in enrich.ts, the one place a resolved
+-- value lands on a lead. Never holds the current value: a value that comes back
+-- is removed from here as it becomes current again.
+CREATE TABLE IF NOT EXISTS lead_finds (
+  id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  field TEXT NOT NULL, -- email|phone
+  value TEXT NOT NULL,
+  verified INTEGER NOT NULL DEFAULT 0,
+  provider_id TEXT NOT NULL DEFAULT '',
+  replaced_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_finds_lead ON lead_finds(lead_id, field);
+
 -- The user's waterfall order per field. Stored as a JSON array of provider ids
 -- so reordering in the UI is one write, and unknown/removed ids degrade to
 -- "skipped" rather than breaking the run.

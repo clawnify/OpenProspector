@@ -5,7 +5,7 @@
 // quietly becoming a bounce-rate problem — see CACHE_MAX_AGE_DAYS.
 
 import { get, query, run } from "./db.js";
-import { cacheKey, type EnrichCache } from "./providers/index.js";
+import { cacheKey, normalize, type EnrichCache } from "./providers/index.js";
 import type { CompanyStore } from "./providers/company.js";
 import type { CompanyRecord, EnrichAttempt, EnrichField, LeadInput } from "./providers/types.js";
 
@@ -52,6 +52,20 @@ export const d1Cache: EnrichCache = {
     );
   },
 };
+
+/**
+ * Drop this person's cached value for `field` unless it is `keep`, the value
+ * the lead now shows. Jumping past a value the user did not trust has to take
+ * it out of the cache as well: an unverified replacement is never cached (see
+ * runWaterfall), so the skipped value would otherwise be handed to the next
+ * lookup of the same person, free and without a warning.
+ */
+export async function forgetCached(field: EnrichField, input: LeadInput, keep: string): Promise<void> {
+  await run("DELETE FROM enrichment_cache WHERE cache_key = ? AND lower(value) <> lower(?)", [
+    cacheKey(field, normalize(input)),
+    keep,
+  ]);
+}
 
 /**
  * D1-backed CompanyStore. Shares the read/write shape of d1Cache above, but

@@ -25,6 +25,15 @@ export interface Lead {
   updated_at: string;
   /** Server-computed: 1 when the lead sat in `running` past the window, so its pass was cut off. */
   stale: number;
+  /** Emails this lead held before a later provider replaced them, newest first. Sent by the list. */
+  email_older?: OlderFind[];
+}
+
+export interface OlderFind {
+  value: string;
+  verified: number;
+  provider_id: string;
+  replaced_at: string;
 }
 
 export interface Signal {
@@ -230,6 +239,13 @@ export const api = {
   enrichLead: (id: string, refresh = false) =>
     req<{ lead: Lead; queued: true } | { lead: Lead; queued: false; credits_used: number; cached: boolean }>(
       `/api/leads/${id}/enrich${refresh ? "?refresh=true" : ""}`,
+      { method: "POST" },
+    ),
+
+  /** Replace a found email with one from the next provider that has not answered yet. Always costs credits. */
+  nextProvider: (id: string) =>
+    req<{ lead: Lead; outcome: "found" | "same" | "none"; provider_id: string | null; asked: number; credits_used: number }>(
+      `/api/leads/${id}/next-provider`,
       { method: "POST" },
     ),
 

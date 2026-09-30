@@ -3,7 +3,7 @@
 // providers first, expensive fallbacks last — so it is directly editable here.
 
 import { ArrowDown, ArrowUp, Check, CircleAlert, Mail, Phone } from "lucide-react";
-import { Badge, Button, Card, Chip, Empty, Favicon, Zone } from "./ui";
+import { Badge, Button, Card, Chip, Empty, Favicon, Tooltip, Zone } from "./ui";
 import type { Provider } from "../api";
 
 const FIELD_META: Record<string, { label: string; icon: typeof Mail; note: string }> = {
@@ -111,12 +111,16 @@ export function WaterfallCard({
               )}
 
               <span className="flex shrink-0 gap-0.5">
-                <Button variant="ghost" size="icon" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`Move ${p.label} up`}>
-                  <ArrowUp size={16} />
-                </Button>
-                <Button variant="ghost" size="icon" onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label={`Move ${p.label} down`}>
-                  <ArrowDown size={16} />
-                </Button>
+                <Tooltip label={`Move ${p.label} up`}>
+                  <Button variant="ghost" size="icon" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`Move ${p.label} up`}>
+                    <ArrowUp size={16} />
+                  </Button>
+                </Tooltip>
+                <Tooltip label={`Move ${p.label} down`}>
+                  <Button variant="ghost" size="icon" onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label={`Move ${p.label} down`}>
+                    <ArrowDown size={16} />
+                  </Button>
+                </Tooltip>
               </span>
             </div>
           );

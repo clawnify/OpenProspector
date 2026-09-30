@@ -175,6 +175,34 @@ export function App() {
     }
   }
 
+  /** A found email the user does not trust: ask the next provider in the waterfall. */
+  async function jump(id: string) {
+    setBusyIds((s) => new Set(s).add(id));
+    try {
+      const r = await api.nextProvider(id);
+      const label = providers.find((p) => p.id === r.provider_id)?.label ?? r.provider_id;
+      const spent = `${r.credits_used} credit${r.credits_used === 1 ? "" : "s"} spent.`;
+      const text =
+        r.outcome === "found"
+          ? `New email from ${label}. The previous one is kept next to it. ${spent}`
+          : r.outcome === "same"
+            ? `${label} returned an email this lead already has. Jump again to ask the next provider. ${spent}`
+            : r.asked === 0
+              ? "No other provider is left to ask for this lead."
+              : `Asked ${r.asked} more provider${r.asked === 1 ? "" : "s"}, none found another email. ${spent}`;
+      setNotice({ tone: "success", text });
+      await Promise.all([loadLeads(), loadProviders()]);
+    } catch (e) {
+      setNotice({ tone: "danger", text: (e as Error).message });
+    } finally {
+      setBusyIds((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
   /**
    * Hand a run to the agent. Sourcing needs a real browser and minutes of
    * runtime, so the app delegates it rather than running it here — but the run
@@ -489,6 +517,7 @@ export function App() {
                   }}
                   onPage={setPage}
                   onEnrich={(id, refresh) => void enrich(id, refresh)}
+                  onJump={(id) => void jump(id)}
                 />
               </div>
             }

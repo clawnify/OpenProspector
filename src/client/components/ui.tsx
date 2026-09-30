@@ -2,7 +2,9 @@
 // badges are signals — two deliberately different shapes so a glance tells
 // you which you're reading.
 
-import { useState, type ReactNode } from "react";
+import { useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 /**
  * Vendor favicon. Points at gstatic's faviconV2 directly rather than
@@ -137,5 +139,57 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
       <p className="text-sm font-medium">{title}</p>
       {hint ? <p className="mt-1 text-sm text-muted-foreground">{hint}</p> : null}
     </div>
+  );
+}
+
+/**
+ * Radix handles placement, focus, Escape and outside click; the surface is the
+ * same card-and-float as the other menus. Rendered in a portal, so a popover
+ * opened from a row is never clipped by the table's scroll container.
+ */
+export const Popover = PopoverPrimitive.Root;
+export const PopoverTrigger = PopoverPrimitive.Trigger;
+
+export function PopoverContent({
+  className = "",
+  align = "start",
+  sideOffset = 4,
+  ...props
+}: ComponentProps<typeof PopoverPrimitive.Content>) {
+  return (
+    <PopoverPrimitive.Portal>
+      <PopoverPrimitive.Content
+        align={align}
+        sideOffset={sideOffset}
+        className={`z-50 rounded-md bg-card p-1 text-foreground shadow-float outline-none ${className}`}
+        {...props}
+      />
+    </PopoverPrimitive.Portal>
+  );
+}
+
+/**
+ * What an icon-only control does, on hover and on keyboard focus. The house
+ * shadcn tooltip, ink on white with an arrow, rendered in a portal so a row's
+ * tooltip is never clipped by the table. It brings its own provider, so nothing
+ * has to wrap the app. The child must pass its props and ref on to a real
+ * element, as Button does, and a disabled button shows no tooltip.
+ */
+export function Tooltip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <TooltipPrimitive.Provider delayDuration={0}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            sideOffset={4}
+            className="z-50 w-fit max-w-64 rounded-md bg-foreground px-3 py-1.5 text-xs text-balance text-background"
+          >
+            {label}
+            <TooltipPrimitive.Arrow className="fill-foreground" />
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 }

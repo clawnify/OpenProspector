@@ -353,6 +353,7 @@ All list endpoints are paginated (`?page=`, `?limit=`, max 100) and searchable â
 | `POST` | `/api/leads` | Import leads (CSV or an existing list) |
 | `GET` | `/api/leads`, `/api/leads/{id}` | List leads; one lead with its attempt log |
 | `POST` | `/api/leads/{id}/enrich` | Queue enrichment for one lead (`?refresh=true` to re-buy). Returns `202`; poll `/api/leads/{id}` until it leaves `running`. `stale: 1` on a `running` lead means its pass was cut off, and calling this again re-runs it |
+| `POST` | `/api/leads/{id}/next-provider` | Replace a found email with one from the next provider that has not answered; the old one is kept in `email_older` |
 | `POST` | `/api/callbacks/{token}` | Where deferred vendors deliver; the token is minted per pause and dies with it |
 | `GET` | `/api/export/leads.csv` | Download leads as CSV (bounded; page with `offset`) |
 | `GET` | `/api/export/leads.csv?format=linkedin-contacts` | LinkedIn Matched Audiences **contact** list |

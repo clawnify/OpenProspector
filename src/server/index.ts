@@ -14,6 +14,7 @@ import {
   expireOverdue,
   finishRunIfDrained,
   resumeLead,
+  tryNextProvider,
   type EnrichEnv,
   type EnrichOptions,
 } from "./enrich.js";
@@ -91,6 +92,21 @@ const LeadSchema = z
   })
   .openapi("Lead");
 
+/** An email the lead held before a later provider replaced it (lead_finds). */
+const OlderFindSchema = z
+  .object({
+    value: z.string(),
+    verified: z.number().int(),
+    provider_id: z.string(),
+    replaced_at: z.string(),
+  })
+  .openapi("OlderFind");
+
+/** A lead as the table shows it: the current email plus the ones it replaced. */
+const LeadWithFindsSchema = LeadSchema.extend({
+  email_older: z.array(OlderFindSchema).openapi({ description: "Emails this lead held before, newest first. Empty unless a later provider replaced one." }),
+}).openapi("LeadWithFinds");
+
 const RunSchema = z
   .object({
     id: z.string(),
@@ -120,6 +136,7 @@ const RunSchema = z
  */
 type LeadRow = z.infer<typeof LeadSchema>;
 type RunRow = z.infer<typeof RunSchema>;
+type OlderFindRow = z.infer<typeof OlderFindSchema>;
 
 const AttemptSchema = z
   .object({
@@ -180,6 +197,24 @@ function paging(q: { page?: string; limit?: string }) {
   const page = Math.max(1, parseInt(q.page || "1", 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(q.limit || "25", 10) || 25));
   return { page, limit, offset: (page - 1) * limit };
+}
+
+/**
+ * Attach each lead's older emails, newest first. One query per page: the ids
+ * travel as a single JSON parameter, so a full page of 100 stays inside D1's
+ * bound-parameter cap.
+ */
+async function withOlderEmails(leads: LeadRow[]): Promise<(LeadRow & { email_older: OlderFindRow[] })[]> {
+  if (leads.length === 0) return [];
+  const rows = await query<OlderFindRow & { lead_id: string }>(
+    `SELECT lead_id, value, verified, provider_id, replaced_at FROM lead_finds
+      WHERE field = 'email' AND lead_id IN (SELECT value FROM json_each(?))
+      ORDER BY replaced_at DESC, rowid DESC`,
+    [JSON.stringify(leads.map((l) => l.id))],
+  );
+  const byLead = new Map<string, OlderFindRow[]>();
+  for (const { lead_id, ...find } of rows) byLead.set(lead_id, [...(byLead.get(lead_id) ?? []), find]);
+  return leads.map((l) => ({ ...l, email_older: byLead.get(l.id) ?? [] }));
 }
 
 /**
@@ -1033,7 +1068,7 @@ const listLeads = createRoute({
       description: "Paginated leads",
       content: {
         "application/json": {
-          schema: z.object({ leads: z.array(LeadSchema), total: z.number().int(), page: z.number().int(), limit: z.number().int() }),
+          schema: z.object({ leads: z.array(LeadWithFindsSchema), total: z.number().int(), page: z.number().int(), limit: z.number().int() }),
         },
       },
     },
@@ -1070,7 +1105,7 @@ app.openapi(listLeads, async (c) => {
     limit,
     offset,
   ]);
-  return c.json({ leads, total: countRow?.total || 0, page, limit }, 200);
+  return c.json({ leads: await withOlderEmails(leads), total: countRow?.total || 0, page, limit }, 200);
 });
 
 /**
@@ -1286,7 +1321,7 @@ const getLead = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            lead: LeadSchema,
+            lead: LeadWithFindsSchema,
             attempts: z.array(AttemptSchema),
           }),
         },
@@ -1306,7 +1341,8 @@ app.openapi(getLead, async (c) => {
     "SELECT provider_id, field, outcome, credits_used, ms, detail, created_at FROM enrichment_attempts WHERE lead_id = ? ORDER BY created_at LIMIT 50",
     [id],
   );
-  return c.json({ lead, attempts }, 200);
+  const [withFinds] = await withOlderEmails([lead]);
+  return c.json({ lead: withFinds, attempts }, 200);
 });
 
 // ── Enrichment ──────────────────────────────────────────────────────
@@ -1614,6 +1650,51 @@ app.post("/api/jobs/enrich-lead", async (c) => {
 
   const outcome = await enrichLead(lead, c.env as EnrichEnv, await enrichOptions(c, payload.refresh === true));
   return c.json({ ok: true, status: outcome.status, credits_used: outcome.credits }, 200);
+});
+
+const nextProvider = createRoute({
+  method: "post",
+  path: "/api/leads/{id}/next-provider",
+  tags: ["Enrichment"],
+  summary: "Replace a lead's email with one from the next provider in the waterfall",
+  description:
+    "For an email that was found but is not good enough. Asks, in the configured email order, the providers that have not answered for this lead yet, and stops at the first verified address. The replaced email is kept in `email_older`. Costs credits at every provider it reaches. Vendors that answer by callback are not asked.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: {
+      description: "What the jump found",
+      content: {
+        "application/json": {
+          schema: z.object({
+            lead: LeadWithFindsSchema,
+            outcome: z.enum(["found", "same", "none"]).openapi({
+              description: "'found': a new email is now current. 'same': the answer was an email this lead already had; jump again to ask past that provider. 'none': nobody asked found one.",
+            }),
+            provider_id: z.string().nullable(),
+            asked: z.number().int().openapi({ description: "Providers actually called. 0 means none was left to ask." }),
+            credits_used: z.number().int(),
+          }),
+        },
+      },
+    },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "The lead has no email yet, or is still being enriched", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(nextProvider, async (c) => {
+  const id = c.req.valid("param").id;
+  const lead = await get<Record<string, unknown>>("SELECT * FROM leads WHERE id = ?", [id]);
+  if (!lead) return c.json({ error: "Not found" }, 404);
+  if (!lead.email) return c.json({ error: "This lead has no email yet. Enrich it first." }, 409);
+  // A pass still in flight would write its own answer over whatever this finds.
+  if (lead.enrich_status === "running" || lead.enrich_status === "waiting") {
+    return c.json({ error: "This lead is still being enriched." }, 409);
+  }
+  const r = await tryNextProvider(lead, "email", c.env as EnrichEnv, await enrichOptions(c));
+  // Non-null: the row was read above in the same request.
+  const [updated] = await withOlderEmails([(await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]))!]);
+  return c.json({ lead: updated, outcome: r.outcome, provider_id: r.providerId, asked: r.asked, credits_used: r.credits }, 200);
 });
 
 /**

@@ -266,8 +266,12 @@ export function describeRequirements(req: InputRequirement): string {
   return req.map((r) => (Array.isArray(r) ? r.join(" or ") : String(r))).join(", ");
 }
 
-/** Fill in `fullName` from parts so adapters never have to reassemble it. */
-function normalize(input: LeadInput): LeadInput {
+/**
+ * Fill in `fullName` from parts so adapters never have to reassemble it.
+ * Exported so a cache eviction outside the runner keys on the same identity
+ * as the runner's own cache reads and writes.
+ */
+export function normalize(input: LeadInput): LeadInput {
   const fullName = input.fullName?.trim() || [input.firstName, input.lastName].filter(Boolean).join(" ").trim();
   const domain = input.domain?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
   const email = input.email?.trim().toLowerCase();
