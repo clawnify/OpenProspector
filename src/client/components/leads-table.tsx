@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RedoDot, RefreshCw, Search, User } from "lucide-react";
-import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger } from "./ui";
+import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger, Tooltip } from "./ui";
 import type { Lead, OlderFind, Provider } from "../api";
 
 /**
@@ -53,13 +53,14 @@ function StatusBadge({ lead }: { lead: Lead }) {
 function OlderFinds({ finds, domainById }: { finds: OlderFind[]; domainById: Map<string, string> }) {
   return (
     <Popover>
-      <PopoverTrigger
-        className="rounded-xs bg-muted px-1.5 py-0.5 text-[0.6875rem] font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground"
-        aria-label={`Show ${finds.length} earlier email${finds.length === 1 ? "" : "s"}`}
-        title="Earlier finds"
-      >
-        +{finds.length}
-      </PopoverTrigger>
+      <Tooltip label="Earlier finds">
+        <PopoverTrigger
+          className="rounded-xs bg-muted px-1.5 py-0.5 text-[0.6875rem] font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground"
+          aria-label={`Show ${finds.length} earlier email${finds.length === 1 ? "" : "s"}`}
+        >
+          +{finds.length}
+        </PopoverTrigger>
+      </Tooltip>
       <PopoverContent className="w-72">
         <p className="px-3 pb-1 pt-2 text-xs text-muted-foreground">Earlier finds</p>
         <ul>
@@ -276,33 +277,37 @@ export function LeadsTable({
                         A lead still running has its pass in flight, and a
                         second click would only be answered with that pass. */}
                     {l.enrich_status === "done" && l.email ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => onJump(l.id)}
-                        disabled={busyIds.has(l.id)}
-                        title="Try the next provider in your list (costs credits)"
-                        aria-label="Try next provider"
-                      >
-                        {busyIds.has(l.id) ? <Loader2 size={16} className="animate-spin" /> : <RedoDot size={16} />}
-                      </Button>
+                      <Tooltip label="Try the next provider in your list (costs credits)">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => onJump(l.id)}
+                          disabled={busyIds.has(l.id)}
+                          aria-label="Try next provider"
+                        >
+                          {busyIds.has(l.id) ? <Loader2 size={16} className="animate-spin" /> : <RedoDot size={16} />}
+                        </Button>
+                      </Tooltip>
                     ) : (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => onEnrich(l.id, Boolean(l.email) && !interrupted(l))}
-                        disabled={busyIds.has(l.id) || (l.enrich_status === "running" && !interrupted(l))}
-                        title={
+                      <Tooltip
+                        label={
                           interrupted(l)
                             ? "Retry. The last pass was interrupted (uses cache when possible)"
                             : l.email
                               ? "Re-buy from vendors (costs credits)"
                               : "Enrich (uses cache when possible)"
                         }
-                        aria-label={interrupted(l) ? "Retry enrichment" : l.email ? "Re-enrich" : "Enrich"}
                       >
-                        <RefreshCw size={16} className={busyIds.has(l.id) ? "animate-spin" : ""} />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => onEnrich(l.id, Boolean(l.email) && !interrupted(l))}
+                          disabled={busyIds.has(l.id) || (l.enrich_status === "running" && !interrupted(l))}
+                          aria-label={interrupted(l) ? "Retry enrichment" : l.email ? "Re-enrich" : "Enrich"}
+                        >
+                          <RefreshCw size={16} className={busyIds.has(l.id) ? "animate-spin" : ""} />
+                        </Button>
+                      </Tooltip>
                     )}
                   </td>
                 </tr>
