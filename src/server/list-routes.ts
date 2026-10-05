@@ -22,6 +22,7 @@ import {
   afterJoin,
   backfill,
   bookTick,
+  rearmIfOverdue,
   effectiveCap,
   latestRefresh,
   lookUpEmails,
@@ -236,6 +237,7 @@ listRoutes.openapi(
   async (c) => {
     const { page, limit, offset } = paging(c.req.valid("query"));
     const rows = await query<SummaryRow>(`SELECT ${SUMMARY_SELECT} FROM lists l ORDER BY l.created_at DESC, l.id LIMIT ? OFFSET ?`, [limit, offset]);
+    for (const r of rows) await rearmIfOverdue(c.env, origin(c), r);
     const total = await get<{ n: number }>("SELECT COUNT(*) AS n FROM lists");
     return c.json({ lists: rows.map((r) => summary(r)), total: total?.n ?? 0, page, limit }, 200);
   },
@@ -266,6 +268,7 @@ listRoutes.openapi(
   }),
   async (c) => {
     const row = await readList(c.req.param("id"));
+    await rearmIfOverdue(c.env, origin(c), row);
     const { from } = await effectiveCap(row.id);
     return c.json({ list: summary(row), cap_from: from, sources: await sourcesOf(row.id), consumers: await consumersOf(row.id) }, 200);
   },
@@ -296,6 +299,7 @@ listRoutes.openapi(
   }),
   async (c) => {
     const list = await readList(c.req.param("id"));
+    await rearmIfOverdue(c.env, origin(c), list);
     const q = c.req.valid("query");
     const { page, limit, offset } = paging(q);
     const verified = q.email_verified === "true" ? " AND d.email_verified = 1" : "";

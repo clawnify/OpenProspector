@@ -408,6 +408,26 @@ export async function bookTick(env: ListsEnv, origin: string, listId: string, wh
   }
 }
 
+/** How late a refresh may be before reading the list books a tick for it. */
+const OVERDUE_MS = 10 * 60 * 1000;
+
+/**
+ * A list whose refresh is long overdue lost its tick: a booking failed, or a
+ * delivery ran out of attempts while the app was down. Reading the list books
+ * one now. Campaigns read their lists every hour, so a list that is being read
+ * can't stop refreshing without anyone noticing. Best effort.
+ */
+export async function rearmIfOverdue(
+  env: ListsEnv,
+  origin: string,
+  list: Pick<ListRow, "id" | "refresh" | "next_refresh_at">,
+  now = new Date(),
+): Promise<void> {
+  if (list.refresh === "off" || !list.next_refresh_at) return;
+  if (now.getTime() - Date.parse(list.next_refresh_at) < OVERDUE_MS) return;
+  await bookTick(env, origin, list.id, now);
+}
+
 /** One tick: refresh when it is due, then look up what the cap allows. */
 export async function tick(env: ListsEnv, origin: string, listId: string, now = new Date()): Promise<{ refreshed: boolean; lookups: number }> {
   const list = await get<ListRow>("SELECT * FROM lists WHERE id = ?", [listId]);

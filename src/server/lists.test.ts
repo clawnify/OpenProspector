@@ -311,6 +311,27 @@ describe("refresh", () => {
     expect(row("SELECT source_id FROM list_members WHERE list_id = ?", list.id).source_id).toBe(search.id);
   });
 
+  it("a list whose tick was lost gets one when it is read, as its campaigns do hourly", async () => {
+    const list = await newList({ refresh: "daily" });
+    const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+    jobs.length = 0;
+    db.prepare("UPDATE lists SET next_refresh_at = ? WHERE id = ?").run(at(60 * 60 * 1000), list.id);
+    await ok(`/api/lists/${list.id}/members?email_verified=true`, { headers: APP });
+    const tick = jobsFor("/api/jobs/list-tick");
+    expect(tick).toHaveLength(1);
+    expect(tick[0].payload).toEqual({ listId: list.id });
+    expect(Date.parse(tick[0].runAt!)).toBeLessThanOrEqual(Date.now());
+    // Due a minute ago is not lost: its own tick is on its way.
+    jobs.length = 0;
+    db.prepare("UPDATE lists SET next_refresh_at = ? WHERE id = ?").run(at(60 * 1000), list.id);
+    await ok("/api/lists", { headers: APP });
+    expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
+    // A list set to off has nothing to re-arm.
+    db.prepare("UPDATE lists SET refresh = 'off', next_refresh_at = ? WHERE id = ?").run(at(24 * 60 * 60 * 1000), list.id);
+    await ok(`/api/lists/${list.id}`, { headers: APP });
+    expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
+  });
+
   it("a tick that is not due, and a list set to off, change nothing", async () => {
     const list = await newList({ refresh: "daily" });
     const search = await newSearch();
