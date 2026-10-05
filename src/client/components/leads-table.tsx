@@ -1,7 +1,7 @@
 // The leads table. Every enriched cell carries its provider attribution, so
 // "where did this email come from?" is answerable without opening anything.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RedoDot, RefreshCw, Search, User } from "lucide-react";
 import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger, Tooltip } from "./ui";
 import type { Lead, OlderFind, Provider } from "../api";
@@ -15,7 +15,7 @@ function interrupted(lead: Lead): boolean {
   return lead.enrich_status === "running" && lead.stale === 1;
 }
 
-function StatusBadge({ lead }: { lead: Lead }) {
+export function StatusBadge({ lead }: { lead: Lead }) {
   if (interrupted(lead)) return <Badge tone="warning">Interrupted</Badge>;
   if (lead.enrich_status === "running") {
     return (
@@ -181,6 +181,9 @@ export function LeadsTable({
   onPage,
   onEnrich,
   onJump,
+  selected,
+  onSelect,
+  selectionBar,
 }: {
   leads: Lead[];
   providers: Provider[];
@@ -193,6 +196,11 @@ export function LeadsTable({
   onPage: (p: number) => void;
   onEnrich: (id: string, refresh: boolean) => void;
   onJump: (id: string) => void;
+  /** Picked rows, for actions on several people at once. Omit for no checkboxes. */
+  selected?: ReadonlySet<string>;
+  onSelect?: (ids: string[], on: boolean) => void;
+  /** Shown in the filter bar while any row is picked. */
+  selectionBar?: ReactNode;
 }) {
   // Provider id -> signup host, so an attribution chip can show the vendor mark.
   const domainById = new Map(providers.map((p) => [p.id, p.signup_url]));
@@ -213,7 +221,11 @@ export function LeadsTable({
             className="input pl-8 text-sm"
           />
         </div>
-        <span className="text-[0.8125rem] text-muted-foreground data">{total.toLocaleString()} leads</span>
+        {selected && selected.size > 0 && selectionBar ? (
+          <span className="flex items-center gap-2">{selectionBar}</span>
+        ) : (
+          <span className="text-[0.8125rem] text-muted-foreground data">{total.toLocaleString()} leads</span>
+        )}
         <span className="flex-1" />
         <ExportMenu />
       </div>
@@ -225,7 +237,18 @@ export function LeadsTable({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                <th className={`${TH} pl-6`}><span className="inline-flex items-center gap-1.5"><User size={14} /> Name</span></th>
+                {selected && onSelect ? (
+                  <th className={`${TH} w-10 pl-6 pr-0`}>
+                    <input
+                      type="checkbox"
+                      className="accent-primary"
+                      aria-label="Select every lead on this page"
+                      checked={leads.length > 0 && leads.every((l) => selected.has(l.id))}
+                      onChange={(e) => onSelect(leads.map((l) => l.id), e.target.checked)}
+                    />
+                  </th>
+                ) : null}
+                <th className={`${TH} ${selected && onSelect ? "" : "pl-6"}`}><span className="inline-flex items-center gap-1.5"><User size={14} /> Name</span></th>
                 <th className={TH}><span className="inline-flex items-center gap-1.5"><Building2 size={14} /> Company</span></th>
                 <th className={TH}><span className="inline-flex items-center gap-1.5"><Mail size={14} /> Email</span></th>
                 <th className={TH}><span className="inline-flex items-center gap-1.5"><Activity size={14} /> Status</span></th>
@@ -234,8 +257,19 @@ export function LeadsTable({
             </thead>
             <tbody>
               {leads.map((l) => (
-                <tr key={l.id} className="h-11 border-b border-border hover:bg-muted">
-                  <td className="px-4 py-2 pl-6">
+                <tr key={l.id} className={`h-11 border-b border-border hover:bg-muted ${selected?.has(l.id) ? "bg-muted" : ""}`}>
+                  {selected && onSelect ? (
+                    <td className="w-10 py-2 pl-6 pr-0">
+                      <input
+                        type="checkbox"
+                        className="accent-primary"
+                        aria-label={`Select ${l.full_name || "this lead"}`}
+                        checked={selected.has(l.id)}
+                        onChange={(e) => onSelect([l.id], e.target.checked)}
+                      />
+                    </td>
+                  ) : null}
+                  <td className={`px-4 py-2 ${selected && onSelect ? "" : "pl-6"}`}>
                     <div className="font-medium">{l.full_name || <span className="text-faint">—</span>}</div>
                     {l.title ? <div className="text-xs text-muted-foreground">{l.title}</div> : null}
                   </td>

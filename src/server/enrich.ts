@@ -28,8 +28,23 @@ export async function runFields(runId: unknown): Promise<EnrichField[]> {
   if (!runId) return FIELDS;
   const row = await get<{ enrich_fields: string }>("SELECT enrich_fields FROM runs WHERE id = ?", [String(runId)]);
   if (!row) return FIELDS;
-  const wanted = new Set(row.enrich_fields.split(",").map((f) => f.trim()));
+  return pickFields(row.enrich_fields);
+}
+
+function pickFields(list: string): EnrichField[] {
+  const wanted = new Set(list.split(",").map((f) => f.trim()));
   return FIELDS.filter((f) => wanted.has(f));
+}
+
+/**
+ * The fields a lead's waterfall buys: the lead's own choice when one was made
+ * for it (a list's automatic lookup buys emails only), else its run's. Read
+ * from the row by every path that continues a lead, so a resume after a
+ * callback cannot quietly go on to buy a phone the lookup never asked for.
+ */
+export async function leadFields(row: Record<string, unknown>): Promise<EnrichField[]> {
+  const own = typeof row.enrich_fields === "string" ? row.enrich_fields.trim() : "";
+  return own ? pickFields(own) : runFields(row.run_id);
 }
 
 /**
@@ -102,7 +117,7 @@ export async function enrichLead(
   const outcome: EnrichOutcome = { status: "done", credits: 0, cached: false };
   const row = { ...lead };
   const from = FIELDS.indexOf(fromField);
-  const fields = (await runFields(row.run_id)).filter((f) => FIELDS.indexOf(f) >= from);
+  const fields = (await leadFields(row)).filter((f) => FIELDS.indexOf(f) >= from);
   for (const field of fields) {
     const token = crypto.randomUUID();
     const res = await runWaterfall(field, leadInput(row), env, {

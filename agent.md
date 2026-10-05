@@ -153,6 +153,23 @@ be lower than what you sent; the difference is the unenrichable rows.
 | `GET /api/export/leads.csv` | Hand the user a file. **Don't call this to read data** — it returns up to 1000 rows and will flood your context; use `GET /api/leads` instead. Add `?format=linkedin-contacts` or `?format=linkedin-companies` when the user wants a LinkedIn Matched Audiences upload; the company list is deduplicated for them. |
 | `POST /api/export/push` | Send leads to a CRM/sequencer the user names. `{ url, headers?, run_id?, only_with_email? }` — https only, public hosts only, redirects refused. |
 
+### Lists
+
+A list collects people from the searches and signals a user attached to it, so a
+campaign can read new people from it every day. The user sets lists up on the
+**Lists** page: which sources feed it, how often its searches run again, and how
+many emails it may look up a day.
+
+- A list's searches come back to you as ordinary search tasks on its schedule.
+  Work them like any other search. The leads you post join the list on their
+  own; do not add them to it by hand.
+- Read lists with `GET /api/lists` and their people with
+  `GET /api/lists/{id}/members` (`?email_verified=true` for verified emails).
+- `POST /api/lists/{id}/members` `{ "lead_ids": [...] }` adds people by hand,
+  when the user asks you to.
+- Never start lookups or refreshes yourself. A list looks up emails within its
+  daily cap and refreshes on its own schedule.
+
 ## Reading the attempt log
 
 | Outcome | Meaning |

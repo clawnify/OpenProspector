@@ -4,6 +4,7 @@ import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Upload } from "lucide-react
 import { AppNav, reportLocation, type AppNavItem } from "@clawnify/app/client";
 import { api, ApiError, type Lead, type Provider, type Run } from "./api";
 import { SignalsRoute } from "./routes/signals";
+import { AddToList, ListDetail, ListsIndex } from "./routes/lists";
 import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
 import { RunsPanel } from "./components/runs-panel";
@@ -17,6 +18,7 @@ const NAV: AppNavItem[] = [
   { id: "home", label: "Leads", href: "/", home: true },
   { id: "leads", label: "Leads", href: "/", icon: "users", color: "blue" },
   { id: "signals", label: "Signals", href: "/signals", icon: "activity", color: "amber" },
+  { id: "lists", label: "Lists", href: "/lists", icon: "list", color: "green" },
   { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
 ];
 
@@ -73,6 +75,8 @@ export function App() {
   // first was still answering took the spinner off the first, which then
   // looked hung.
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  // People picked in the table, for "Add to list".
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [dispatching, setDispatching] = useState(false);
   // Only set when dispatch failed: the brief the user can hand over by hand,
@@ -278,7 +282,9 @@ export function App() {
     ? "settings"
     : location.pathname.startsWith("/signals")
       ? "signals"
-      : "leads";
+      : location.pathname.startsWith("/lists")
+        ? "lists"
+        : "leads";
 
   // Lets the dashboard restore this exact screen on reload.
   useEffect(() => {
@@ -324,6 +330,8 @@ export function App() {
               </div>
             }
           />
+          <Route path="/lists" element={<ListsIndex />} />
+          <Route path="/lists/:id" element={<ListDetail />} />
           <Route
             path="/settings"
             element={
@@ -381,7 +389,7 @@ export function App() {
                             aria-pressed={mode === value}
                             onClick={() => setMode(value)}
                             className={`h-7 whitespace-nowrap rounded-[3px] px-2.5 text-xs font-medium ${
-                              mode === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                              mode === value ? "bg-background text-foreground shadow-raised" : "text-muted-foreground hover:text-foreground"
                             }`}
                           >
                             {label}
@@ -518,6 +526,29 @@ export function App() {
                   onPage={setPage}
                   onEnrich={(id, refresh) => void enrich(id, refresh)}
                   onJump={(id) => void jump(id)}
+                  selected={selected}
+                  onSelect={(ids, on) =>
+                    setSelected((s) => {
+                      const next = new Set(s);
+                      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+                      return next;
+                    })
+                  }
+                  selectionBar={
+                    <>
+                      <span className="data text-[0.8125rem] text-muted-foreground">{selected.size} selected</span>
+                      <AddToList
+                        leadIds={[...selected]}
+                        onDone={(text, tone) => {
+                          setNotice({ tone, text });
+                          if (tone === "success") setSelected(new Set());
+                        }}
+                      />
+                      <Button variant="ghost" onClick={() => setSelected(new Set())}>
+                        Clear
+                      </Button>
+                    </>
+                  }
                 />
               </div>
             }

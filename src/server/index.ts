@@ -20,8 +20,12 @@ import {
 } from "./enrich.js";
 import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safeHeaders, pushVerdict } from "./export.js";
 import { ageDays, dedupeKey, isLive, normalizeDomain, stackCounts } from "./signals.js";
-import { dispatchAvailable, dispatchTask, listAgentServers, sourcingBrief } from "./agent.js";
-import { parseSalesNavigatorUrl, salesNavigatorBrief } from "./sales-navigator.js";
+import { dispatchAvailable, listAgentServers } from "./agent.js";
+import { parseSalesNavigatorUrl } from "./sales-navigator.js";
+import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER, configuredServerId, dispatchRun } from "./runs.js";
+import { LeadSchema } from "./lead-schema.js";
+import { afterJoin, joinFromRun } from "./lists.js";
+import { listRoutes } from "./list-routes.js";
 import { monitorRoutes } from "./monitor-routes.js";
 import type { EnrichField, EnrichResult, LedgerField } from "./providers/types.js";
 
@@ -47,6 +51,7 @@ const app = createApp<Env>({
 });
 
 app.route("/", monitorRoutes);
+app.route("/", listRoutes);
 
 // ── Shared schemas ──────────────────────────────────────────────────
 
@@ -59,38 +64,6 @@ const PaginationQuery = z.object({
   search: z.string().optional().openapi({ description: "Free-text match on name, company, domain, title" }),
 });
 
-const LeadSchema = z
-  .object({
-    id: z.string(),
-    run_id: z.string().nullable(),
-    full_name: z.string(),
-    title: z.string(),
-    company: z.string(),
-    domain: z.string(),
-    linkedin_url: z.string(),
-    location: z.string(),
-    source: z.string(),
-    source_url: z.string(),
-    evidence: z.string(),
-    email: z.string(),
-    email_verified: z.number().int(),
-    email_provider: z.string(),
-    phone: z.string(),
-    phone_verified: z.number().int(),
-    phone_provider: z.string(),
-    enrich_status: z.string(),
-    created_at: z.string(),
-    updated_at: z.string(),
-    /**
-     * Computed by the server, not stored, the same way a run's `stale` is: a
-     * lead still `running` long after anything touched it. Whatever was
-     * enriching it died without finishing, so it will not move on its own.
-     */
-    stale: z.number().int().openapi({
-      description: "1 when the lead has sat in `running` past the stranding window: the pass enriching it was cut off. Re-run it with POST /api/leads/{id}/enrich.",
-    }),
-  })
-  .openapi("Lead");
 
 /** An email the lead held before a later provider replaced it (lead_finds). */
 const OlderFindSchema = z
@@ -115,6 +88,7 @@ const RunSchema = z
     source: z.string().openapi({ description: "'icp' (agent researches the web) or 'sales_navigator' (agent exports the Sales Navigator list in icp_prompt)" }),
     enrich_fields: z.string().openapi({ description: "Comma-separated contact fields this run buys: 'email,phone' or 'email'" }),
     auto_enrich: z.number().int().openapi({ description: "1 when enrichment starts by itself once the list is in" }),
+    refresh_of: z.string().nullable().optional().openapi({ description: "Set on a re-run a list's refresh started: the search it repeated" }),
     lead_count: z.number().int(),
     credits_spent: z.number().int(),
     error: z.string(),
@@ -153,27 +127,7 @@ const AttemptSchema = z
 type AttemptRow = z.infer<typeof AttemptSchema>;
 
 /**
- * How long a run may sit in `sourcing` without an update before the UI calls it
- * stalled. Agent turns are legitimately slow (minutes), so this is generous;
- * it exists to catch an agent that died mid-task, which is the one failure the
- * app cannot otherwise distinguish from "still working".
- */
-const STALE_AFTER = "-15 minutes";
-
-/**
- * Every runs read goes through this so `stale` can never drift between routes.
- *
- * Covers `enriching` as well as `sourcing`: a queued enrichment that never got
- * delivered leaves the run mid-flight with nothing to report the failure, which
- * looked identical to one still working. Both in-flight states now have a clock.
- * The enrich job heartbeats `updated_at` per batch so a long, healthy run is
- * never mistaken for a dead one.
- */
-const RUN_SELECT =
-  `*, (CASE WHEN status IN ('sourcing', 'enriching') AND updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale`;
-
-/**
- * The same for leads, bound to STRANDED_AFTER (the enrichment section below),
+ * The same for leads, bound to STRANDED_AFTER (runs.ts),
  * the window the batch job already uses to reclaim a lead left `running`.
  *
  * A lead enriched on its own, outside any run, has no batch job to reclaim it,
@@ -522,7 +476,11 @@ const listRuns = createRoute({
   path: "/api/runs",
   tags: ["Runs"],
   summary: "List runs with pagination",
-  request: { query: PaginationQuery },
+  request: {
+    query: PaginationQuery.extend({
+      searches: z.string().optional().openapi({ description: "'true' for searches only, leaving out the re-runs a list's refresh starts" }),
+    }),
+  },
   responses: {
     200: {
       description: "Paginated runs",
@@ -539,7 +497,8 @@ app.openapi(listRuns, async (c) => {
   const q = c.req.valid("query");
   const { page, limit, offset } = paging(q);
   const search = (q.search || "").trim();
-  const where = search ? " WHERE icp_prompt LIKE ?" : "";
+  const conditions = [...(search ? ["icp_prompt LIKE ?"] : []), ...(q.searches === "true" ? ["refresh_of IS NULL"] : [])];
+  const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
   const params = search ? [`%${search}%`] : [];
 
   const countRow = await get<{ total: number }>("SELECT COUNT(*) AS total FROM runs" + where, params);
@@ -953,12 +912,6 @@ app.openapi(runFromSignal, async (c) => {
 // context in every agent turn. The agent's side of this contract is the two
 // routes it already has: PATCH /api/runs/{id} and POST /api/leads.
 
-/** The chosen agent, or null to let the platform resolve a single-agent org. */
-async function configuredServerId(): Promise<string | null> {
-  const row = await get<{ server_id: string }>("SELECT server_id FROM agent_config WHERE id = 1");
-  return row?.server_id || null;
-}
-
 app.get("/api/agent", async (c) => {
   const servers = await listAgentServers(c.env);
   return c.json({
@@ -997,52 +950,14 @@ app.put("/api/agent", async (c) => {
   return c.json({ server_id: wanted || null });
 });
 
-/**
- * Hand a run to the agent.
- *
- * Kept separate from run creation deliberately: the run is a durable record the
- * moment the user describes an ICP, and a dispatch failure must not erase it.
- * The same call then serves as the retry for a run whose agent died mid-task.
- */
+/** Hand a run to the agent (runs.ts): the brief comes back with a failure, so
+ *  the user can still paste it into chat. */
 app.post("/api/runs/:id/dispatch", async (c) => {
-  const runId = c.req.param("id");
-  const row = await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, runId]);
-  if (!row) return c.json({ error: "Run not found" }, 404);
-
-  // Refuse to dispatch work already in flight. A *stalled* sourcing run falls
-  // through on purpose — that is exactly the case worth retrying.
-  if ((row.status === "sourcing" && !row.stale) || row.status === "enriching") {
-    return c.json({ error: "This search is already running." }, 409);
-  }
-  if (row.status === "done") return c.json({ error: "This search has already finished." }, 409);
-
-  const appUrl = new URL(c.req.url).origin;
-  const brief =
-    row.source === "sales_navigator"
-      ? salesNavigatorBrief({ runId, url: row.icp_prompt, appUrl, includeEmails: row.auto_enrich === 1 })
-      : sourcingBrief({ runId, prompt: row.icp_prompt, appUrl });
-
-  // Idempotency key = run id + the row's current updated_at. A double-click
-  // carries the same key (nothing has changed yet) so the platform delivers
-  // once; a genuine retry later carries a different one, because a successful
-  // dispatch bumps updated_at. Keying on the run id alone would look safer and
-  // silently swallow every retry for 24 hours — the worse failure.
-  const result = await dispatchTask(c.env, {
-    instruction: brief,
-    serverId: await configuredServerId(),
-    idempotencyKey: `${runId}:${row.updated_at}`,
-  });
-
+  const result = await dispatchRun(c.env, new URL(c.req.url).origin, c.req.param("id"));
   if (!result.ok) {
-    // updated_at is deliberately NOT bumped here: nothing was delivered, so a
-    // failed retry must not reset the staleness clock on the original attempt.
-    // The platform records its idempotency key only after a successful
-    // dispatch, so retrying with the unchanged key still goes through.
-    await run("UPDATE runs SET error = ? WHERE id = ?", [result.error.slice(0, 2000), runId]);
-    return c.json({ error: result.error, brief, servers: result.servers ?? [] }, 502);
+    if (result.status === 502) return c.json({ error: result.error, brief: result.brief, servers: result.servers ?? [] }, 502);
+    return c.json({ error: result.error }, result.status);
   }
-
-  await run("UPDATE runs SET status = 'sourcing', error = '', updated_at = datetime('now') WHERE id = ?", [runId]);
   return c.json(
     { dispatched: true, task_id: result.taskId, server_id: result.serverId, duplicate: result.duplicate },
     202,
@@ -1173,12 +1088,14 @@ app.openapi(importLeads, async (c) => {
 
   const runId = body.run_id ?? null;
   const rows = await dropListedAlready(runId, valid);
+  // Ids up front, so the new leads can join the lists their search feeds.
+  const ids = rows.map(() => crypto.randomUUID());
   // 11 params per row; chunked to stay under D1's 100-bound-parameter cap.
   for (let i = 0; i < rows.length; i += 9) {
     const slice = rows.slice(i, i + 9);
     const values = slice.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
-    const params = slice.flatMap((l) => [
-      crypto.randomUUID(),
+    const params = slice.flatMap((l, j) => [
+      ids[i + j],
       runId,
       (l.full_name || "").trim(),
       (l.title || "").trim(),
@@ -1206,6 +1123,9 @@ app.openapi(importLeads, async (c) => {
       "UPDATE runs SET lead_count = (SELECT COUNT(*) FROM leads WHERE run_id = ?), updated_at = datetime('now') WHERE id = ?",
       [runId, runId],
     );
+    // The lists this search feeds take them in, and look up what their caps allow.
+    const grew = await joinFromRun(runId, ids);
+    await afterJoin(c.env, new URL(c.req.url).origin, grew);
   }
   return c.json({ imported: rows.length, run_id: runId }, 201);
 });
@@ -1364,14 +1284,6 @@ const BATCH_SIZE = 10;
  * well inside that, however many polled vendors the user stacks in an order.
  */
 const BATCH_BUDGET_MS = 60_000;
-
-/**
- * A lead left `running` this long was mid-vendor-call when its delivery died
- * (the consumer's wall clock, a crash) and will never be picked up by a chain
- * that only selects `pending`. Reclaimed on the next delivery; the cache makes
- * a repeat of its already-verified fields free.
- */
-const STRANDED_AFTER = "-15 minutes";
 
 /** Both waterfalls' configured order, read once per batch rather than per lead. */
 async function enrichOptions(c: { req: { url: string } }, refresh = false): Promise<EnrichOptions> {
@@ -1574,8 +1486,10 @@ app.openapi(reEnrichLead, async (c) => {
   // passes over it: the second finds it `running` and fresh, changes nothing,
   // and is answered with the pass already in flight. A lead `running` past
   // STRANDED_AFTER is claimable again, which is how an interrupted one re-runs.
+  // Clearing enrich_fields gives a hand-started pass the run's fields again: a
+  // list's automatic lookup limits a lead to email, a person's click does not.
   const claim = await run(
-    `UPDATE leads SET enrich_status = 'running', updated_at = datetime('now')
+    `UPDATE leads SET enrich_status = 'running', enrich_fields = NULL, updated_at = datetime('now')
       WHERE id = ? AND NOT (enrich_status = 'running' AND updated_at >= datetime('now', ?))`,
     [id, STRANDED_AFTER],
   );

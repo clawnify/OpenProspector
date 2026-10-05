@@ -4,6 +4,7 @@ import { get, query, run } from "./db.js";
 import { MonitorInput, SignalObservationInput, linkedinUrl, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
 import { normalizeDomain, normalizeUrl } from "./signals.js";
 import { signalBrief } from "./signal-brief.js";
+import { afterJoin, joinFromSignal, listsFedBy } from "./lists.js";
 
 type Env = { Bindings: AgentsEnv };
 interface MonitorRow { id: string; config: string; create_request: string; active: number; schedule_id: string | null; schedule_error: string | null; created_at: string }
@@ -233,6 +234,11 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
     // Accept the old LinkedIn shape on custom monitors: already-running tasks
     // and native schedules may still carry the previously attached snapshot.
     let recorded = 0;
+    // A signal that feeds a list adds its new people to it as they are found:
+    // attaching it to the list was the review. Baseline findings stay hidden,
+    // and companies never become people.
+    const feeds = !check.baseline && (await listsFedBy("signal", check.monitor_id)).length > 0;
+    const grew = new Set<string>();
     for (const observation of observations) {
       const fingerprint = await observationFingerprint(observation);
       const inserted = await get<{ id: string }>(
@@ -242,8 +248,15 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
             WHERE c.id = ? AND c.status = 'sourcing' AND m.active = 1)
          ON CONFLICT(monitor_id, fingerprint) DO NOTHING RETURNING id`,
         [crypto.randomUUID(), check.monitor_id, check.id, fingerprint, JSON.stringify(observation), check.baseline ? 0 : 1, check.id]);
-      if (inserted) recorded++;
+      if (inserted) {
+        recorded++;
+        if (feeds && isPerson(observation)) {
+          const leadId = await promoteObservation(inserted.id, JSON.stringify(observation));
+          for (const listId of await joinFromSignal(check.monitor_id, leadId)) grew.add(listId);
+        }
+      }
     }
+    await afterJoin(c.env, new URL(c.req.url).origin, [...grew]);
     return c.json({ recorded, baseline: Boolean(check.baseline) }, 200);
   });
 monitorRoutes.get("/api/monitor-observations", async c => {
@@ -252,11 +265,19 @@ monitorRoutes.get("/api/monitor-observations", async c => {
   const count = await get<{ total: number }>("SELECT COUNT(*) total FROM signal_observations WHERE visible = 1");
   return c.json({ observations: rows.map(({ details, ...row }) => ({ ...row, ...JSON.parse(details) } as Observation)), total: count?.total ?? 0, page, limit: LIMIT });
 });
-monitorRoutes.post("/api/monitor-observations/:id/lead", async c => {
-  const row = await get<ObservationRow>("SELECT * FROM signal_observations WHERE id = ? AND visible = 1", [UUID.parse(c.req.param("id"))]);
-  if (!row) throw new InputError("Finding not found", 404);
-  const data = SignalObservationInput.parse(JSON.parse(row.details));
-  if ("kind" in data && data.subject.type === "company") throw new InputError("Company findings cannot be added to people.");
+/** Whether a finding is about a person, the only kind that can become a lead. */
+function isPerson(data: z.infer<typeof SignalObservationInput>): boolean {
+  return !("kind" in data) || data.subject.type === "person";
+}
+
+/**
+ * "Add to people": a person finding becomes a lead, once. Shared by the
+ * button and by a signal that feeds a list, where attaching the signal was
+ * the review.
+ */
+export async function promoteObservation(observationId: string, details: string): Promise<string> {
+  const data = SignalObservationInput.parse(JSON.parse(details));
+  if (!isPerson(data)) throw new InputError("Company findings cannot be added to people.");
   const person = "kind" in data && data.subject.type === "person" ? data.subject : null;
   const profile = normalizeUrl("kind" in data ? person!.profile_url : data.profile_url);
   const isLinkedin = linkedinUrl(profile, "profile");
@@ -270,6 +291,15 @@ monitorRoutes.post("/api/monitor-observations/:id/lead", async c => {
       `Profile: ${person!.profile_url}\n${data.summary}\nSignal reason: ${data.reason}`] :
     [leadId, data.person_name, profile, data.company, normalizeDomain(data.domain), "linkedin", data.source_url,
       `${data.engagement}: ${data.quote}\nICP fit: ${data.why_fit}\nContext: ${data.outreach_context}`]);
-  await run("UPDATE signal_observations SET lead_id = ? WHERE id = ?", [leadId, row.id]);
+  await run("UPDATE signal_observations SET lead_id = ? WHERE id = ?", [leadId, observationId]);
+  return leadId;
+}
+
+monitorRoutes.post("/api/monitor-observations/:id/lead", async c => {
+  const row = await get<ObservationRow>("SELECT * FROM signal_observations WHERE id = ? AND visible = 1", [UUID.parse(c.req.param("id"))]);
+  if (!row) throw new InputError("Finding not found", 404);
+  const leadId = await promoteObservation(row.id, row.details);
+  // Someone added by hand from a signal that feeds lists joins them too.
+  await afterJoin(c.env, new URL(c.req.url).origin, await joinFromSignal(row.monitor_id, leadId));
   return c.json({ lead_id: leadId });
 });
