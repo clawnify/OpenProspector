@@ -249,7 +249,9 @@ export function Picker({
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-56">
-        <Command label={label}>
+        {/* The keyboard cursor starts on the chosen row, so one row is lit on
+            open rather than the first row and the chosen one together. */}
+        <Command label={label} defaultValue={current ? `${current.label} ${current.value}`.trim() : undefined}>
           {options.length > 10 ? <Command.Input placeholder="Search" className="input mb-1 h-8 text-sm" /> : null}
           <Command.List className="max-h-64 overflow-y-auto">
             <Command.Empty className="px-2 py-1.5 text-sm text-muted-foreground">{options.length ? "No match" : empty}</Command.Empty>
