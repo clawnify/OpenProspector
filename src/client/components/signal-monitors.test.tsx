@@ -44,3 +44,12 @@ it.each(["company", "person"] as const)("renders a custom %s with evidence and s
   if (type === "company") expect(html).not.toContain("Add to people");
   else expect(html).toContain("Add to people");
 });
+
+it("asks how many new people a check may record, 25 to start", () => {
+  const html = renderToStaticMarkup(<MonitorForm kind="post" onClose={() => {}} onSaved={() => {}} />);
+  expect(html).toMatch(/new people(<!-- -->)? per check/);
+  expect(html).toContain('value="25"');
+  expect(html).not.toContain("<select");
+  const custom = renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />);
+  expect(custom).toMatch(/new findings(<!-- -->)? per check/);
+});

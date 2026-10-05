@@ -29,6 +29,8 @@ export const MonitorInput = z.object({
   frequency: z.enum(["once", "daily", "weekly"]),
   include_existing: z.boolean(),
   ends_at: z.string().datetime().nullable(),
+  /** New findings a check may record; the rest wait for the next check. */
+  max_per_check: z.number().int().min(1).max(100).default(25),
 }).strict().superRefine((v, ctx) => {
   if (v.kind !== "custom" && v.icp.length < 3)
     ctx.addIssue({ code: "custom", path: ["icp"], message: "Describe who we should look for." });
@@ -42,6 +44,16 @@ export const MonitorInput = z.object({
     ctx.addIssue({ code: "custom", path: ["source"], message: "Keep the query under 500 characters." });
 });
 export type MonitorConfig = z.infer<typeof MonitorInput>;
+/**
+ * What an existing monitor lets you change. What it watches (`source` on the
+ * LinkedIn templates) stays fixed, because its findings and its first-check
+ * baseline belong to that profile, post or query. A custom monitor's source is
+ * its research prompt, so it can change.
+ */
+export const MonitorEdit = MonitorInput.innerType()
+  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true })
+  .extend({ source: MonitorInput.innerType().shape.source.optional() }).strict();
+export type MonitorEditInput = z.infer<typeof MonitorEdit>;
 export interface Monitor extends MonitorConfig {
   id: string; active: boolean; schedule_id: string | null;
   schedule_error: string | null; created_at: string;

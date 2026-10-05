@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS signal_observations (
   UNIQUE(monitor_id, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_observations_feed ON signal_observations(visible, observed_at);
+-- Counts a check's new findings against the monitor's max_per_check.
+CREATE INDEX IF NOT EXISTS idx_signal_observations_check ON signal_observations(check_id, visible);
 
 CREATE TABLE IF NOT EXISTS leads (
   id TEXT PRIMARY KEY,

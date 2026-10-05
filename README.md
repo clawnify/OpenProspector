@@ -82,8 +82,12 @@ research and pauses the native schedule when it next attempts a check. Pausing
 also blocks new findings if the agent is temporarily unreachable. Interrupting
 a check closes it to writes but does not terminate the agent's session. An
 uncertain dispatch is not automatically retried; inspect or interrupt it first.
-Source/agent/criteria edits are not part of this first version: pause the old
-monitor and create another to change its configuration.
+**Edit** changes a saved monitor's name, who to look for, agent, frequency, end
+date and how many new findings one check may record (25 by default, up to 100;
+the rest wait for the next check). Its schedule follows the edit. What a
+LinkedIn monitor watches stays fixed, because its findings and baseline belong
+to that profile, post or query: create another monitor to watch something else.
+A custom monitor's prompt can be edited.
 
 Local tests require Node 22.13+ (`node:sqlite`). `pnpm test`, `pnpm typecheck`,
 and `pnpm build` generate embedded procedures from

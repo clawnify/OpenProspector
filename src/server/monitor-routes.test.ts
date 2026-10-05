@@ -165,7 +165,7 @@ describe("custom person/company signals", () => {
   it("hides existing custom findings in the baseline and surfaces new evidence later", async () => {
     const id = await create({ ...customConfig, include_existing: false });
     const first = await begin(id);
-    expect((await record(first.id, [companyFinding])).body).toEqual({ recorded: 1, baseline: true });
+    expect((await record(first.id, [companyFinding])).body).toEqual({ recorded: 1, baseline: true, remaining: null, limit_reached: false });
     expect((await request("/api/monitor-observations")).body.total).toBe(0);
     await finish(first.id);
     const next = await begin(id);
@@ -332,7 +332,7 @@ describe("engagement baseline, dedupe and promotion", () => {
     expect(external).not.toHaveBeenCalled();
   });
   it("paginates all growing collections and rejects oversized batches", async () => {
-    const id = await create(); const check = await begin(id);
+    const id = await create({ max_per_check: 100 }); const check = await begin(id);
     expect((await record(check.id, Array(26).fill(finding))).status).toBe(400);
     for (let i = 0; i < 30; i++) await record(check.id, [{ ...finding, profile_url: `https://www.linkedin.com/in/person-${i}` }]);
     expect((await request("/api/monitor-observations")).body.observations).toHaveLength(25);
@@ -345,5 +345,133 @@ describe("engagement baseline, dedupe and promotion", () => {
     const id = await create();
     db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
     expect((await request(`/api/monitors/${id}`)).status).toBe(200);
+  });
+});
+
+describe("editing a saved monitor", () => {
+  const otherServer = "9a4f2a1e-2b5c-4d6e-8f70-112233445566";
+  const edit = (id: string, settings: Record<string, unknown>, requestId: string = crypto.randomUUID()) =>
+    request(`/api/monitors/${id}`, "PUT", { request_id: requestId, name: cfg.name, icp: cfg.icp, server_id: serverId,
+      frequency: "daily", ends_at: null, max_per_check: 25, ...settings });
+  const calls = () => external.mock.calls.map(([url, init]) => `${init.method} ${url.replace(/^.*\/v1\/agents/, "")}`);
+
+  it("renames and retimes the schedule in place, with the current procedure", async () => {
+    const id = await create({ frequency: "daily" });
+    external.mockClear();
+    const r = await edit(id, { name: "Agency founders", icp: "Founders of B2B agencies", frequency: "weekly", max_per_check: 10 });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.monitor).toMatchObject({ name: "Agency founders", icp: "Founders of B2B agencies", frequency: "weekly", max_per_check: 10, schedule_id: schedule.id });
+    expect(calls()).toEqual([`PATCH /servers/${serverId}/schedules/${schedule.id}`]);
+    const patch = JSON.parse(external.mock.calls[0][1].body);
+    expect(patch).toMatchObject({ name: "OpenProspector: Agency founders", trigger: { kind: "every", every_ms: 604800000 } });
+    expect(patch.text).toContain(signalSkill.hash);
+    expect(patch).not.toHaveProperty("enabled");
+  });
+
+  it("keeps what a LinkedIn monitor watches, and lets a custom prompt change", async () => {
+    const id = await create();
+    expect((await edit(id, { frequency: "once", source: "https://www.linkedin.com/posts/other_activity-9" })).status).toBe(400);
+    expect((await edit(id, { frequency: "once", source: cfg.source })).status).toBe(200);
+    const custom = await create(customConfig);
+    const r = await edit(custom, { frequency: "once", icp: "", source: "Find new coverage of Acme Magnetics." });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.monitor.source).toBe("Find new coverage of Acme Magnetics.");
+    expect(r.body.monitor.kind).toBe("custom");
+  });
+
+  it("moves to another agent: the old schedule pauses before the new one exists, then goes", async () => {
+    const id = await create({ frequency: "daily" });
+    external.mockClear();
+    external.mockImplementation(async (url: string) =>
+      Response.json({ schedule: url.includes(otherServer) ? { id: "native-schedule-2", enabled: true } : schedule, replayed: false }));
+    const requestId = crypto.randomUUID();
+    const r = await edit(id, { server_id: otherServer }, requestId);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.monitor).toMatchObject({ server_id: otherServer, schedule_id: "native-schedule-2", schedule_error: null });
+    expect(calls()).toEqual([
+      `PATCH /servers/${serverId}/schedules/${schedule.id}`,
+      `POST /servers/${otherServer}/schedules`,
+      `DELETE /servers/${serverId}/schedules/${schedule.id}`,
+    ]);
+    expect(JSON.parse(external.mock.calls[0][1].body)).toEqual({ enabled: false });
+    expect(external.mock.calls[1][1].headers["Idempotency-Key"]).toBe(`openprospector-monitor:${id}:${requestId}`);
+  });
+
+  it("brings the old schedule back and changes nothing when the move fails", async () => {
+    const id = await create({ frequency: "daily" });
+    external.mockClear();
+    external.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes(otherServer)) return Response.json({ error: { code: "agent_server_not_ready", message: "Agent not ready" } }, { status: 503 });
+      return Response.json({ schedule, replayed: false });
+    });
+    expect((await edit(id, { server_id: otherServer })).status).toBe(503);
+    const saved = (await request(`/api/monitors/${id}`)).body.monitor;
+    expect(saved).toMatchObject({ server_id: serverId, schedule_id: schedule.id });
+    expect(external.mock.calls.map(([, init]) => init.body && JSON.parse(init.body).enabled).filter(v => v !== undefined)).toEqual([false, true]);
+  });
+
+  it("drops the schedule when it stops repeating, and makes one when it starts", async () => {
+    const id = await create({ frequency: "daily" });
+    external.mockClear();
+    const once = await edit(id, { frequency: "once" });
+    expect(once.body.monitor.schedule_id).toBeNull();
+    expect(calls()).toEqual([`PATCH /servers/${serverId}/schedules/${schedule.id}`, `DELETE /servers/${serverId}/schedules/${schedule.id}`]);
+    external.mockClear();
+    const daily = await edit(id, { frequency: "daily" });
+    expect(daily.body.monitor.schedule_id).toBe(schedule.id);
+    expect(calls()).toEqual([`POST /servers/${serverId}/schedules`]);
+  });
+
+  it("a paused monitor's new schedule starts paused", async () => {
+    const id = await create();
+    await request(`/api/monitors/${id}`, "PATCH", { active: false });
+    external.mockClear();
+    expect((await edit(id, { frequency: "weekly" })).status).toBe(200);
+    expect(calls()).toEqual([`POST /servers/${serverId}/schedules`, `PATCH /servers/${serverId}/schedules/${schedule.id}`]);
+    expect(JSON.parse(external.mock.calls[1][1].body)).toEqual({ enabled: false });
+  });
+
+  it("refuses an end date already past and a limit out of range", async () => {
+    const id = await create();
+    expect((await edit(id, { ends_at: "2020-01-01T00:00:00.000Z" })).status).toBe(400);
+    expect((await edit(id, { frequency: "once", max_per_check: 0 })).status).toBe(400);
+    expect((await edit(id, { frequency: "once", max_per_check: 101 })).status).toBe(400);
+  });
+});
+
+describe("new findings per check", () => {
+  const people = (n: number) => Array.from({ length: n }, (_, i) => ({ ...finding, person_name: `Person ${i}`, profile_url: `https://www.linkedin.com/in/person-${i}` }));
+
+  it("records up to max_per_check new findings, then says to stop", async () => {
+    const id = await create({ max_per_check: 2 });
+    const check = await begin(id);
+    const first = await record(check.id, people(3));
+    expect(first.body).toEqual({ recorded: 2, baseline: false, remaining: 0, limit_reached: true });
+    expect((await record(check.id, people(5).slice(3))).body.recorded).toBe(0);
+    await finish(check.id);
+    // The ones left over are new on the next check.
+    const next = await begin(id);
+    expect((await record(next.id, people(5))).body).toMatchObject({ recorded: 2, limit_reached: true });
+    expect((await request("/api/monitor-observations")).body.total).toBe(4);
+  });
+
+  it("reports what is left while under the limit", async () => {
+    const id = await create();
+    const check = await begin(id);
+    expect((await record(check.id, people(3))).body).toEqual({ recorded: 3, baseline: false, remaining: 22, limit_reached: false });
+  });
+
+  it("does not cap the hidden baseline", async () => {
+    const id = await create({ include_existing: false, max_per_check: 1 });
+    const check = await begin(id);
+    expect((await record(check.id, people(4))).body).toEqual({ recorded: 4, baseline: true, remaining: null, limit_reached: false });
+  });
+
+  it("gives a monitor saved before the limit existed the default, and its create retry still replays", async () => {
+    const id = crypto.randomUUID();
+    const { max_per_check: _, ...old } = MonitorInput.parse(cfg);
+    db.prepare("INSERT INTO signal_monitors(id, config, create_request) VALUES (?, ?, ?)").run(id, JSON.stringify(old), JSON.stringify(old));
+    expect((await request(`/api/monitors/${id}`)).body.monitor.max_per_check).toBe(25);
+    expect((await request("/api/monitors", "POST", { id, ...cfg })).status).toBe(201);
   });
 });
