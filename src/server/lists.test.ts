@@ -126,6 +126,12 @@ afterEach(() => {
 });
 
 describe("the list contract", () => {
+  it("the manifest says it provides leads where the platform reads it (app.provides)", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../../clawnify.json", import.meta.url), "utf8"));
+    expect(manifest.app.provides).toContain("leads");
+    expect(manifest.provides).toBeUndefined();
+  });
+
   it("lists carry the fields other apps read", async () => {
     const created = await newList({ refresh: "weekly" });
     const { lists, total, page, limit } = await ok("/api/lists");
