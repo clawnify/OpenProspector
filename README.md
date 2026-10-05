@@ -270,6 +270,15 @@ Already built the list in Sales Navigator? Switch the search card to **Sales Nav
 - One search exports at most 2,500 people, which is all Sales Navigator pages through. A bigger search is exported up to that and the search says so.
 - The app never calls LinkedIn itself. The agent stops if LinkedIn asks it to sign in, solve a CAPTCHA or slow down. Automated reading of Sales Navigator is against LinkedIn's terms, so keep exports to lists you need, and know that the risk sits with the seat being used.
 
+## Lists
+
+A list is where people collect for outreach. It keeps filling from the searches and signals you attach to it, so a campaign can take a few new people from it every day.
+
+- **Sources.** Attach any searches and any signals. The people a search finds join the list, and so do the people its re-runs find. The people a signal finds join without the usual review, since attaching the signal to a list is that review; companies never do. You can also select people on the Leads page and add them by hand. Someone is in a list once: a second lead with the same profile, or the same name at the same domain, is left out.
+- **Refresh.** A list runs its searches again every hour, day or week, or only when you press **Refresh now**, handing each search to your agent as a new run. Signals keep the schedule they were created with. A re-run that fails or stops reporting holds that search until you look at it, rather than handing the same work to a broken agent every hour.
+- **Email lookups, capped per day.** New people without an email are looked up on their own: emails only, from the cache when it has them, and never twice. A list starts at most its daily cap of lookups per UTC day. Leave the cap empty and it follows demand: the sum of what the campaigns reading the list take a day. With neither, nothing is bought on its own. Phones are never bought automatically.
+- **Campaigns read them.** An outreach app in the same workspace, such as OpenSequence, registers as a reader of a list with how many people a day it takes, then reads the people who have a verified email, oldest first (`GET /api/lists/{id}/members?email_verified=true`).
+
 ## How the Waterfall Works
 
 1. **Cache first.** A normalized `(field, name, domain)` key is checked before any vendor call. A hit costs nothing.
@@ -287,6 +296,7 @@ Cached values expire after **90 days**. Contact data decays as people change job
 - **Cost ledger** — per-provider outcome and credit breakdown; spend is read back from the ledger, so a crashed job can't under-report
 - **Provider attribution** — every enriched cell shows which vendor produced it
 - **CSV import** — bring a list you already have; column headers are matched loosely
+- **Lists that keep filling**: searches and signals feed a list, its searches run again on a schedule, and new people's emails are looked up up to a daily cap
 - **LinkedIn Matched Audiences export** — contact and company lists in exactly the header shape Campaign Manager expects, so an enriched search becomes an ad audience without a spreadsheet in between
 - **Batch enrichment** — large lists process as chained background jobs, safe against redelivery
 - **Full OpenAPI** — `/api/openapi.json` and `/llms.txt` for agent-driven use
@@ -359,6 +369,10 @@ All list endpoints are paginated (`?page=`, `?limit=`, max 100) and searchable �
 | `GET` | `/api/export/leads.csv?format=linkedin-contacts` | LinkedIn Matched Audiences **contact** list |
 | `GET` | `/api/export/leads.csv?format=linkedin-companies` | LinkedIn Matched Audiences **company** list, deduplicated |
 | `POST` | `/api/export/push` | POST leads to a CRM, sequencer, or webhook you control |
+| `GET` | `/api/lists`, `/api/lists/{id}` | Lists with their counts and daily lookup cap; one list with its sources and readers |
+| `GET` | `/api/lists/{id}/members` | The people in a list, oldest first; `?email_verified=true` for verified emails only |
+| `PUT`, `DELETE` | `/api/lists/{id}/consumers/{key}` | Read a list (or stop), saying how many people a day you take |
+| `POST` | `/api/lists/{id}/members` | Add people to a list by hand |
 
 **Push safety.** The destination is caller-supplied, so it is validated before anything is sent: **https only**, public hosts only (loopback, private ranges, carrier-grade NAT, IPv6 unique/link-local, `.local`/`.internal`, and cloud metadata addresses are all refused), hop-by-hop and `Host` headers stripped, header-injection attempts dropped, and **redirects refused rather than followed** — a permitted host must not be able to bounce your contact data onward.
 

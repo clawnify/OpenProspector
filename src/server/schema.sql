@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS runs (
   -- (the "include emails" choice). Kept on the row because a retried dispatch
   -- rebuilds the instruction from it.
   auto_enrich INTEGER NOT NULL DEFAULT 0,
+  -- Set on a run a list's refresh started: the search it re-ran (always the
+  -- original, never another refresh). Its leads join the lists that search
+  -- feeds, exactly as the original's did.
+  refresh_of TEXT,
   lead_count INTEGER NOT NULL DEFAULT 0,
   -- Running total from the attempt ledger; shown as "what this search cost you".
   credits_spent INTEGER NOT NULL DEFAULT 0,
@@ -93,6 +97,12 @@ CREATE TABLE IF NOT EXISTS leads (
   phone_provider TEXT DEFAULT '',
 
   enrich_status TEXT NOT NULL DEFAULT 'pending', -- pending|running|waiting|done|failed
+  -- The fields this lead's waterfall buys when set: a list's automatic lookup
+  -- sets 'email', so a run that also buys phones cannot add them on its back.
+  -- On the lead rather than passed along, for the same reason as
+  -- runs.enrich_fields: four paths continue a lead and all of them read this.
+  -- Empty: the run's choice, or every field for a lead with no run.
+  enrich_fields TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -289,3 +299,65 @@ CREATE TABLE IF NOT EXISTS signals (
 CREATE INDEX IF NOT EXISTS idx_signals_domain ON signals(domain);
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_signals_occurred ON signals(occurred_at);
+
+-- A list of people that keeps filling: the place campaigns read from.
+--
+-- Its own thing rather than part of a search or a signal, because several
+-- sources feed one list, and because a list outlives its sources: a signal
+-- monitor cannot be edited, only paused and replaced, and a list kept under
+-- it would leave every campaign reading it pointed at a dead monitor.
+CREATE TABLE IF NOT EXISTS lists (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  -- How often its searches are run again: hourly|daily|weekly|off. Signals
+  -- keep the schedule they were created with.
+  refresh TEXT NOT NULL DEFAULT 'daily',
+  -- Automatic email lookups per UTC day. Null: as many as the campaigns
+  -- reading the list take a day (the sum of list_consumers.daily).
+  email_daily_cap INTEGER,
+  -- Lookups started on lookups_day, the UTC day they count against.
+  lookups_day TEXT,
+  lookups_used INTEGER NOT NULL DEFAULT 0,
+  last_refreshed_at TEXT,
+  next_refresh_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- What feeds a list: a search (runs.id, the original, never a refresh) or a
+-- signal monitor (signal_monitors.id).
+CREATE TABLE IF NOT EXISTS list_sources (
+  list_id TEXT NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, -- search|signal
+  source_id TEXT NOT NULL,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (list_id, kind, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_list_sources_source ON list_sources(kind, source_id);
+
+-- Who is in a list. A person is in it once: a lead is never added twice, and
+-- a second lead for someone already in it (same profile, or same name at the
+-- same domain) is left out, so a search re-run that finds them again adds
+-- nobody.
+CREATE TABLE IF NOT EXISTS list_members (
+  list_id TEXT NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  source_kind TEXT NOT NULL, -- search|signal|manual
+  source_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (list_id, lead_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_list_members_order ON list_members(list_id, added_at, lead_id);
+
+-- Apps that read a list (an outreach campaign) and how many people a day each
+-- takes: what an unset email_daily_cap is worked out from.
+CREATE TABLE IF NOT EXISTS list_consumers (
+  list_id TEXT NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  consumer_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  daily INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (list_id, consumer_key)
+);

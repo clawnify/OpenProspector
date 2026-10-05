@@ -77,6 +77,8 @@ export interface Run {
   enrich_fields: string;
   /** 1 when enrichment starts by itself once the list is in. */
   auto_enrich: number;
+  /** Set on a re-run a list's refresh started: the search it repeated. */
+  refresh_of?: string | null;
 }
 
 export interface Provider {
@@ -120,6 +122,49 @@ export interface AgentState {
   reachable: boolean;
   server_id: string | null;
   servers: AgentServer[];
+}
+
+export type Refresh = "hourly" | "daily" | "weekly" | "off";
+
+/** A list of people that keeps filling from searches and signals. */
+export interface ProspectList {
+  id: string;
+  name: string;
+  refresh: Refresh;
+  member_count: number;
+  verified_count: number;
+  email_daily_cap: number | null;
+  effective_daily_cap: number;
+  lookups_today: number;
+  last_refreshed_at: string | null;
+  next_refresh_at: string | null;
+  created_at: string;
+}
+
+export interface ListSource {
+  kind: "search" | "signal";
+  source_id: string;
+  name: string;
+  added_at: string;
+  missing: boolean;
+  last_refresh?: { id: string; status: string; error: string; lead_count: number; created_at: string; stale: number } | null;
+  hold?: "working" | "failed" | "stalled" | "undelivered" | null;
+  frequency?: string | null;
+  active?: boolean | null;
+  schedule_error?: string | null;
+}
+
+export interface ListConsumer {
+  key: string;
+  name: string;
+  daily: number;
+  updated_at: string;
+}
+
+export interface ListMember extends Lead {
+  added_at: string;
+  source_kind: "search" | "signal" | "manual";
+  source_id: string;
 }
 
 /**
@@ -187,7 +232,27 @@ export const api = {
 
   runFromSignal: (id: string) => req<{ run: Run; signal: Signal }>(`/api/signals/${id}/run`, { method: "POST" }),
 
-  runs: (page = 1) => req<{ runs: Run[]; total: number; page: number; limit: number }>(`/api/runs?page=${page}`),
+  runs: (page = 1, opts: { searchesOnly?: boolean; limit?: number } = {}) =>
+    req<{ runs: Run[]; total: number; page: number; limit: number }>(
+      `/api/runs?page=${page}${opts.searchesOnly ? "&searches=true" : ""}${opts.limit ? `&limit=${opts.limit}` : ""}`,
+    ),
+
+  lists: (page = 1, limit = 25) => req<{ lists: ProspectList[]; total: number; page: number; limit: number }>(`/api/lists?page=${page}&limit=${limit}`),
+  list: (id: string) =>
+    req<{ list: ProspectList; cap_from: "list" | "consumers" | "none"; sources: ListSource[]; consumers: ListConsumer[] }>(`/api/lists/${id}`),
+  listMembers: (id: string, page = 1) => req<{ members: ListMember[]; total: number; page: number; limit: number }>(`/api/lists/${id}/members?page=${page}`),
+  createList: (body: { name: string; refresh?: Refresh; email_daily_cap?: number | null }) =>
+    req<{ list: ProspectList }>("/api/lists", { method: "POST", body: JSON.stringify(body) }),
+  updateList: (id: string, body: { name?: string; refresh?: Refresh; email_daily_cap?: number | null }) =>
+    req<{ list: ProspectList }>(`/api/lists/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteList: (id: string) => req<{ ok: boolean }>(`/api/lists/${id}`, { method: "DELETE" }),
+  addListSource: (id: string, kind: "search" | "signal", source_id: string) =>
+    req<{ added: number }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
+  removeListSource: (id: string, kind: "search" | "signal", source_id: string) =>
+    req<{ ok: boolean }>(`/api/lists/${id}/sources/${kind}/${encodeURIComponent(source_id)}`, { method: "DELETE" }),
+  addToList: (id: string, lead_ids: string[]) =>
+    req<{ added: number }>(`/api/lists/${id}/members`, { method: "POST", body: JSON.stringify({ lead_ids }) }),
+  refreshList: (id: string) => req<{ started: number; failed: number; lookups: number }>(`/api/lists/${id}/refresh`, { method: "POST" }),
 
   createRun: (icp_prompt: string) =>
     req<{ run: Run }>("/api/runs", { method: "POST", body: JSON.stringify({ icp_prompt }) }),

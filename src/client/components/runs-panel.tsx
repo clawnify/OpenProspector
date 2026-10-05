@@ -108,6 +108,9 @@ export function RunsPanel({
                   alternative is a red badge with no way to learn why. */}
               {r.error ? <span className="block truncate text-xs text-destructive">{r.error}</span> : null}
             </span>
+            {/* A list's refresh repeats a search with the same description; the
+                chip is what tells the copy from the original. */}
+            {r.refresh_of ? <Chip>List refresh</Chip> : null}
             <Chip>
               <span className="data">{r.lead_count}</span> leads
             </Chip>
