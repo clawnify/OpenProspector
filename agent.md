@@ -88,6 +88,8 @@ then `/api/monitor-checks/{id}/observations` to record engagement and
 - Person-level findings do not require a guessed company domain or event date.
 - The app handles baseline visibility and deduplication; submit observed matches
   even when you think they were seen before. Coverage is bounded, not exhaustive.
+- A monitor's `max_per_check` caps the new findings one check records. When a
+  response says `limit_reached`, stop and finish the check as `done`.
 
 ### Sales Navigator exports
 

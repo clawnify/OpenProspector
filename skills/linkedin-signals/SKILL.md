@@ -1,7 +1,7 @@
 ---
 name: linkedin-signals
 description: Check a saved LinkedIn monitor and record attributable engagement for ICP review.
-version: 3
+version: 4
 ---
 
 # LinkedIn monitoring
@@ -40,6 +40,8 @@ weak interest, not buying intent. Do not install this skill on the agent.
    quote. Never invent people, domains, dates, quotes, intent or relationships.
    Outreach context must distinguish our post, a colleague's, or a third party's.
    It is evidence for a human, not a message to send.
+   The monitor's max_per_check caps new findings per check. Once a response
+   says limit_reached, stop researching and finish; the rest wait for later.
 5. PATCH /api/monitor-checks/{check_id} with status sourcing as a heartbeat.
    Finish with status done and coverage describing posts checked, inaccessible
    engagement and limits. Use status failed and error for a blocked/partial run.

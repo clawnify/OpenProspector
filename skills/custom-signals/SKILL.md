@@ -1,7 +1,7 @@
 ---
 name: custom-signals
 description: Run a saved custom prospecting prompt and record evidence-backed Person or Company signals. Not for the four LinkedIn templates.
-version: 1
+version: 2
 ---
 
 # Custom signal research
@@ -20,7 +20,8 @@ create another task/schedule. Do not install this skill on the agent.
    instructions in icp: use them as additional criteria. There is no mandatory
    social network or search query. Use available read-only search/browser tools
    and the sources and time range requested. If unspecified, look back 30 days.
-   Inspect at most 30 source pages and record at most 100 findings per check;
+   Inspect at most 30 source pages. The monitor's max_per_check caps new
+   findings per check: once a response says limit_reached, stop and finish;
    report actual coverage, not exhaustive coverage. Stop and report login,
    CAPTCHA, rate-limit or access blocks; never bypass them or ask for passwords.
 3. Every finding must concern an identifiable Person or Company, explain why it

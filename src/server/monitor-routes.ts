@@ -1,7 +1,7 @@
 import { createApp, createRoute, z } from "@clawnify/app";
 import { createAgents, ClawnifyAgentsError, type AgentsEnv } from "@clawnify/agents";
 import { get, query, run } from "./db.js";
-import { MonitorInput, SignalObservationInput, linkedinUrl, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
+import { MonitorEdit, MonitorInput, SignalObservationInput, linkedinUrl, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
 import { normalizeDomain, normalizeUrl } from "./signals.js";
 import { signalBrief } from "./signal-brief.js";
 import { afterJoin, joinFromSignal, listsFedBy } from "./lists.js";
@@ -116,7 +116,9 @@ monitorRoutes.post("/api/monitors", async c => {
   const serialized = JSON.stringify(cfg);
   await run("INSERT INTO signal_monitors(id, config, create_request) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING", [id, serialized, serialized]);
   let row = await readMonitor(id);
-  if (row.create_request !== serialized) throw new InputError("This creation ID was already used. Refresh before creating another monitor.", 409);
+  // Parsed, so a row saved before a field had a default still matches its retry.
+  if (JSON.stringify(MonitorInput.parse(JSON.parse(row.create_request))) !== serialized)
+    throw new InputError("This creation ID was already used. Refresh before creating another monitor.", 409);
   if (cfg.frequency !== "once" && !row.schedule_id) {
     try {
       const result = await createAgents(c.env).schedules.create(cfg.server_id, {
@@ -155,6 +157,61 @@ monitorRoutes.patch("/api/monitors/:id", async c => {
     }
   }
   await run("UPDATE signal_monitors SET active = ?, schedule_error = NULL WHERE id = ?", [Number(patch.active), row.id]);
+  return c.json({ monitor: await present(await readMonitor(row.id)) });
+});
+/**
+ * Change a monitor's settings. Its native schedule follows: renamed and
+ * retimed in place, or moved when the agent changes or it starts or stops
+ * repeating. The old schedule is paused before a new one exists, so two
+ * agents never check one monitor, and it comes back if the new one fails.
+ * `request_id` keys the new schedule, so a retry after a lost response
+ * replays it instead of making a second one.
+ */
+monitorRoutes.put("/api/monitors/:id", async c => {
+  const row = await readMonitor(c.req.param("id"));
+  const { request_id, ...body } = z.object({ request_id: UUID }).passthrough().parse(await c.req.json());
+  const edit = MonitorEdit.parse(body);
+  const before = config(row);
+  if (edit.source !== undefined && edit.source !== before.source && before.kind !== "custom")
+    throw new InputError("What a signal watches can't change. Create another signal to watch something else.");
+  const next = MonitorInput.parse({ ...before, ...edit, source: edit.source ?? before.source });
+  if (next.ends_at && next.ends_at !== before.ends_at && Date.parse(next.ends_at) <= Date.now())
+    throw new InputError("Choose an end date in the future.");
+  const agents = createAgents(c.env);
+  const save = (scheduleId: string | null) =>
+    run("UPDATE signal_monitors SET config = ?, schedule_id = ?, schedule_error = NULL WHERE id = ?", [JSON.stringify(next), scheduleId, row.id]);
+  const old = row.schedule_id;
+  const settings = {
+    name: `OpenProspector: ${next.name}`,
+    // The procedure snapshot is refreshed too, so an edit carries the current one.
+    text: signalBrief(new URL(c.req.url).origin, row.id, undefined, next.kind),
+  };
+  if (next.frequency === "once") {
+    if (old) await agents.schedules.pause(before.server_id, old);
+    await save(null);
+    if (old) await agents.schedules.delete(before.server_id, old).catch(() => {}); // Paused already; a leftover never runs.
+  } else if (old && next.server_id === before.server_id) {
+    await agents.schedules.update(before.server_id, old, { ...settings, trigger: { kind: "every", every_ms: INTERVAL[next.frequency] } });
+    await save(old);
+  } else {
+    if (old) await agents.schedules.pause(before.server_id, old);
+    let created;
+    try {
+      created = await agents.schedules.create(next.server_id, { ...settings, trigger: { kind: "every", every_ms: INTERVAL[next.frequency] } },
+        { idempotencyKey: `openprospector-monitor:${row.id}:${request_id}` });
+    } catch (e) {
+      if (old && row.active) await agents.schedules.resume(before.server_id, old).catch(async () => {
+        await run("UPDATE signal_monitors SET schedule_error = ? WHERE id = ?", ["The schedule was paused while moving it and could not be resumed. Pause and resume this signal.", row.id]);
+      });
+      throw e;
+    }
+    await save(created.schedule.id);
+    if (old) await agents.schedules.delete(before.server_id, old).catch(() => {});
+    if (!(await readMonitor(row.id)).active) {
+      try { await agents.schedules.pause(next.server_id, created.schedule.id); }
+      catch (e) { await run("UPDATE signal_monitors SET schedule_error = ? WHERE id = ?", [message(e), row.id]); }
+    }
+  }
   return c.json({ monitor: await present(await readMonitor(row.id)) });
 });
 monitorRoutes.post("/api/monitors/:id/run", async c => {
@@ -196,7 +253,9 @@ function result<T extends z.ZodTypeAny>(schema: T) {
 const MonitorResponse = result(z.object({ monitor: MonitorSchema }));
 const CheckResponse = result(z.object({ check: CheckSchema }));
 const BeginResponse = result(z.object({ check: CheckSchema, created: z.boolean() }));
-const ObservationsResponse = result(z.object({ recorded: z.number(), baseline: z.boolean() }));
+const ObservationsResponse = result(z.object({ recorded: z.number(), baseline: z.boolean(),
+  remaining: z.number().nullable().describe("New findings this check may still record; null on a baseline check"),
+  limit_reached: z.boolean().describe("The monitor's max_per_check is used up: stop and finish the check as done") }));
 const IdParam = z.object({ id: UUID });
 monitorRoutes.openapi(createRoute({ method: "get", path: "/api/monitors/{id}", tags: ["Monitoring"],
   summary: "Read a monitor's current settings before researching", request: { params: IdParam }, responses: { 200: MonitorResponse } }),
@@ -221,7 +280,7 @@ monitorRoutes.openapi(createRoute({ method: "patch", path: "/api/monitor-checks/
     return c.json({ check: await readCheck(check.id) }, 200);
   });
 monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{id}/observations", tags: ["Monitoring"],
-  summary: "Record person/company findings; repeats and baseline are handled atomically. Custom monitors also accept legacy LinkedIn observations.", request: { params: IdParam,
+  summary: "Record person/company findings; repeats, baseline and the monitor's max_per_check are handled atomically. Custom monitors also accept legacy LinkedIn observations.", request: { params: IdParam,
     body: { content: { "application/json": { schema: z.object({ observations: z.array(SignalObservationInput).min(1).max(25) }).strict() } } } }, responses: { 200: ObservationsResponse } }),
   async c => {
     const check = await readCheck(c.req.param("id"));
@@ -239,6 +298,7 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
     // and companies never become people.
     const feeds = !check.baseline && (await listsFedBy("signal", check.monitor_id)).length > 0;
     const grew = new Set<string>();
+    const cap = config(monitor).max_per_check;
     for (const observation of observations) {
       const fingerprint = await observationFingerprint(observation);
       const inserted = await get<{ id: string }>(
@@ -246,8 +306,11 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
          SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS
            (SELECT 1 FROM signal_checks c JOIN signal_monitors m ON m.id = c.monitor_id
             WHERE c.id = ? AND c.status = 'sourcing' AND m.active = 1)
+           -- A baseline is uncapped: it hides what already exists.
+           AND (? = 1 OR (SELECT COUNT(*) FROM signal_observations WHERE check_id = ? AND visible = 1) < ?)
          ON CONFLICT(monitor_id, fingerprint) DO NOTHING RETURNING id`,
-        [crypto.randomUUID(), check.monitor_id, check.id, fingerprint, JSON.stringify(observation), check.baseline ? 0 : 1, check.id]);
+        [crypto.randomUUID(), check.monitor_id, check.id, fingerprint, JSON.stringify(observation), check.baseline ? 0 : 1, check.id,
+          check.baseline, check.id, cap]);
       if (inserted) {
         recorded++;
         if (feeds && isPerson(observation)) {
@@ -257,7 +320,10 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
       }
     }
     await afterJoin(c.env, new URL(c.req.url).origin, [...grew]);
-    return c.json({ recorded, baseline: Boolean(check.baseline) }, 200);
+    if (check.baseline) return c.json({ recorded, baseline: true, remaining: null, limit_reached: false }, 200);
+    const found = await get<{ n: number }>("SELECT COUNT(*) n FROM signal_observations WHERE check_id = ? AND visible = 1", [check.id]);
+    const remaining = Math.max(0, cap - (found?.n ?? 0));
+    return c.json({ recorded, baseline: false, remaining, limit_reached: remaining === 0 }, 200);
   });
 monitorRoutes.get("/api/monitor-observations", async c => {
   const page = Page.parse(c.req.query("page"));

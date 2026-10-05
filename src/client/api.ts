@@ -1,6 +1,6 @@
 // Thin typed wrapper over the app's own API. Every list call is paginated —
 // the server clamps limit to 100, so there is no way to ask for the table.
-import type { Monitor, MonitorConfig, Observation } from "../shared/monitors";
+import type { Monitor, MonitorConfig, MonitorEditInput, Observation } from "../shared/monitors";
 
 export interface Lead {
   id: string;
@@ -199,6 +199,7 @@ export const api = {
   signalAgents: (page = 1) => req<{ servers: AgentServer[]; page: { has_more: boolean }; selected: string | null }>(`/api/signal-agents?page=${page}`),
   monitors: (page = 1) => req<{ monitors: Monitor[]; total: number; page: number; limit: number }>(`/api/monitors?page=${page}`),
   createMonitor: (id: string, config: MonitorConfig) => req<{ monitor: Monitor }>("/api/monitors", { method: "POST", body: JSON.stringify({ id, ...config }) }),
+  editMonitor: (id: string, requestId: string, settings: MonitorEditInput) => req<{ monitor: Monitor }>(`/api/monitors/${id}`, { method: "PUT", body: JSON.stringify({ request_id: requestId, ...settings }) }),
   toggleMonitor: (id: string, active: boolean) => req<{ monitor: Monitor }>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
   runMonitor: (monitor: string, id: string) => req<{ check: { id: string; status: string } }>(`/api/monitors/${monitor}/run`, { method: "POST", body: JSON.stringify({ id }) }),
   interruptCheck: (id: string) => req<{ ok: boolean }>(`/api/monitor-checks/${id}/interrupt`, { method: "POST" }),
