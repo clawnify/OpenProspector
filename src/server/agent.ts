@@ -166,3 +166,60 @@ export function sourcingBrief(opts: { runId: string; prompt: string; appUrl: str
     `then POST the leads to /api/leads with run_id "${opts.runId}".`,
   ].join("\n");
 }
+
+/** What the platform accepts as one task's instruction. */
+const INSTRUCTION_LIMIT = 4000;
+
+/**
+ * The instruction for searches opened for companies a signal found: find the
+ * person to contact at each. One text for a batch, so a check that found eight
+ * companies costs the agent one session, not eight. Each search's own prompt
+ * (who to look for, why the company matters) stays on its run, which the agent
+ * reads, so a retry of a single search uses this same text.
+ */
+export function companyBrief(appUrl: string, searches: { id: string; company_domain: string }[]): string {
+  return [
+    `Find the person to contact at each company below, for OpenProspector (${appUrl}).`,
+    `Each line is a search the app opened for one company a signal found. Read it`,
+    `first with GET /api/runs/{id}: its icp_prompt says who to look for and why.`,
+    ``,
+    `For each search, in turn:`,
+    `1. PATCH /api/runs/{id} {"status":"sourcing"}.`,
+    `2. Read the company's own website: about, team, contact and imprint pages,`,
+    `   then the company registry. A small business's owner is usually named`,
+    `   there and often has no LinkedIn profile. If the prompt names nobody to`,
+    `   look for, find the owner or managing director; at a larger company, up`,
+    `   to 3 people who would decide, best first.`,
+    `3. POST /api/leads {"run_id": "<id>", "leads": [...]}: full_name, title,`,
+    `   company, domain (the company's bare domain), linkedin_url only for a real`,
+    `   profile you opened, source_url (the page that names them) and evidence`,
+    `   (one line on why this person).`,
+    `4. PATCH /api/runs/{id} {"status":"done"}. Nobody named anywhere you could`,
+    `   read is done with no leads; use {"status":"failed","error":"…"} only when`,
+    `   you were blocked. Never guess a name.`,
+    ``,
+    `Do NOT look up email addresses or phone numbers, and never contact anyone:`,
+    `the app does that.`,
+    ``,
+    `Searches:`,
+    ...searches.map((s) => `- ${s.id}: ${s.company_domain}`),
+  ].join("\n");
+}
+
+/** Company searches split into briefs that each fit one task. */
+export function companyBatches<T extends { id: string; company_domain: string }>(
+  appUrl: string,
+  searches: T[],
+): { searches: T[]; brief: string }[] {
+  const batches: { searches: T[]; brief: string }[] = [];
+  let current: T[] = [];
+  for (const search of searches) {
+    if (current.length && companyBrief(appUrl, [...current, search]).length > INSTRUCTION_LIMIT) {
+      batches.push({ searches: current, brief: companyBrief(appUrl, current) });
+      current = [];
+    }
+    current.push(search);
+  }
+  if (current.length) batches.push({ searches: current, brief: companyBrief(appUrl, current) });
+  return batches;
+}

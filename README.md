@@ -89,6 +89,15 @@ LinkedIn monitor watches stays fixed, because its findings and baseline belong
 to that profile, post or query: create another monitor to watch something else.
 A custom monitor's prompt can be edited.
 
+**Companies a signal finds.** A custom monitor can find companies as well as
+people. For each company there is one search, whichever monitors find it, for
+the person to contact there: the owner of a small business by default, or the
+role you set in **Who to contact at the companies it finds**. A monitor that
+feeds a list opens these searches by itself, handing a check's companies to the
+agent in one task, and their people join the list. Attaching a monitor to a list
+also searches the companies it already found, newest first, up to its per-check
+limit. Otherwise **Find people** on a company finding opens the search by hand.
+
 Local tests require Node 22.13+ (`node:sqlite`). `pnpm test`, `pnpm typecheck`,
 and `pnpm build` generate embedded procedures from
 `skills/linkedin-signals/SKILL.md` (the four LinkedIn templates) and
@@ -324,6 +333,8 @@ pnpm dev                          # UI on :5175, API on :8789
 ```
 
 Every provider is optional. With no keys at all the app still runs — the waterfall records `unconfigured` for each vendor so you can see what a key would buy you.
+
+`pnpm dev` applies `src/server/schema.sql` to your local database as it stands, which creates new tables but cannot add a column to an existing one. If it stops with `no such column` after you pull an update, your local database predates that column: delete `.wrangler/state` and start again. (A deployed app is unaffected: the platform adds new columns on deploy.)
 
 ```bash
 pnpm test        # waterfall ordering, eligibility, cache and TTL behaviour

@@ -42,6 +42,7 @@ vi.mock("@clawnify/queue", () => ({
 }));
 
 import app from "./index";
+import { companyBatches } from "./agent";
 
 const DB = { prepare: () => { throw new Error("queries must go through the mocked ./db.js"); } };
 const env = { CLAWNIFY_TOKEN: "test-only-token", DB };
@@ -96,6 +97,13 @@ const finding = {
   source_url: monitorConfig.source, engagement: "comment", quote: "We lose weeks to permits", occurred_at: null,
   why_fit: "Runs a building firm", outreach_context: "Commented on our permits post",
 };
+const companyFinding = (name: string, domain: string, extra: Record<string, unknown> = {}) => ({
+  kind: "custom", subject: { type: "company", name, domain }, source_url: `https://${domain}/about`,
+  summary: `${name} runs service vans in Amsterdam.`, reason: "Shows its vans on its website.", occurred_at: null, ...extra,
+});
+const bouwFinding = companyFinding("Bouw BV", "bouw.nl");
+const smitFinding = companyFinding("Smit Bouw", "smitbouw.nl");
+const vansSignal = { kind: "custom", source: "Field service companies in Amsterdam with their own vans.", icp: "", name: "Vans in Amsterdam" };
 async function newMonitor(overrides: Record<string, unknown> = {}) {
   const id = crypto.randomUUID();
   await ok("/api/monitors", { method: "POST", body: { id, ...monitorConfig, ...overrides } });
@@ -106,6 +114,8 @@ async function beginCheck(monitorId: string) {
 }
 
 let agentCalls: string[];
+/** The instructions handed to the agent, in order. */
+let tasks: { instruction: string; idempotency_key: string }[];
 
 beforeEach(() => {
   db = new DatabaseSync(":memory:");
@@ -113,9 +123,11 @@ beforeEach(() => {
   jobs.length = 0;
   bought.length = 0;
   agentCalls = [];
+  tasks = [];
   // The platform's agents API: a dispatch is accepted.
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     agentCalls.push(String(url));
+    if (String(url).endsWith("/tasks")) tasks.push(JSON.parse(String(init?.body)));
     if (String(url).endsWith("/tasks")) return Response.json({ task_id: `task-${agentCalls.length}`, server_id: serverId, agent: "main", status: "queued" }, { status: 202 });
     return Response.json({ servers: [{ id: serverId, name: "Pedro", status: "ready" }], page: { limit: 25, offset: 0, has_more: false } });
   }));
@@ -247,17 +259,14 @@ describe("people join from a signal", () => {
     expect(row("SELECT COUNT(*) AS n FROM leads").n).toBe(0);
   });
 
-  it("company findings and a hidden first-run baseline never join", async () => {
+  it("a company joins as nobody: its people come from the search opened for it, and a hidden baseline never joins", async () => {
     const list = await newList();
     const custom = await newMonitor({ kind: "custom", source: "Find coverage of Dutch building firms.", icp: "", name: "Coverage" });
     await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: custom } });
-    const company = {
-      kind: "custom", subject: { type: "company", name: "Bouw BV", domain: "bouw.nl" }, source_url: "https://magazine.example/bouw",
-      summary: "Covered for a new site.", reason: "Recent coverage.", occurred_at: null,
-    };
     const check = await beginCheck(custom);
-    await ok(`/api/monitor-checks/${check.id}/observations`, { method: "POST", body: { observations: [company] }, headers: AGENT });
+    await ok(`/api/monitor-checks/${check.id}/observations`, { method: "POST", body: { observations: [bouwFinding] }, headers: AGENT });
     expect(row("SELECT COUNT(*) AS n FROM list_members").n).toBe(0);
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE company_domain = 'bouw.nl'").n).toBe(1);
 
     const baselined = await newMonitor({ include_existing: false });
     await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: baselined } });
@@ -278,6 +287,185 @@ describe("people join from a signal", () => {
     const observation = row("SELECT id FROM signal_observations").id;
     await ok(`/api/monitor-observations/${observation}/lead`, { method: "POST" });
     expect(row("SELECT COUNT(*) AS n FROM list_members WHERE list_id = ?", list.id).n).toBe(1);
+  });
+});
+
+describe("people at the companies a signal finds", () => {
+  const record = (checkId: string, observations: unknown[]) =>
+    ok(`/api/monitor-checks/${checkId}/observations`, { method: "POST", body: { observations }, headers: AGENT });
+  const finishCheck = (checkId: string) =>
+    ok(`/api/monitor-checks/${checkId}`, { method: "PATCH", body: { status: "done", coverage: "Read the companies' sites" }, headers: AGENT });
+  const searchOf = (domain: string) => row("SELECT * FROM runs WHERE company_domain = ?", domain);
+  const findings = async () => (await ok("/api/monitor-observations")).observations as Record<string, any>[];
+
+  it("a signal feeding a list opens one search per new company, handed to the agent in one task", async () => {
+    const list = await newList();
+    const monitor = await newMonitor({ ...vansSignal, who_to_contact: "the owner" });
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    const check = await beginCheck(monitor);
+    await record(check.id, [bouwFinding, smitFinding]);
+
+    const bouw = searchOf("bouw.nl");
+    const smit = searchOf("smitbouw.nl");
+    expect(bouw.status).toBe("sourcing");
+    expect(bouw.icp_prompt).toContain("Who to contact at Bouw BV (bouw.nl): the owner.");
+    expect(bouw.icp_prompt).toContain("Shows its vans on its website.");
+    expect(bouw.icp_prompt).toContain('Found by the signal "Vans in Amsterdam": https://bouw.nl/about');
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].instruction).toContain(`- ${bouw.id}: bouw.nl`);
+    expect(tasks[0].instruction).toContain(`- ${smit.id}: smitbouw.nl`);
+    expect(tasks[0].instruction).toContain("Never guess a name");
+    // The finding says where its search stands.
+    expect((await findings()).map((f) => f.search?.status)).toEqual(["sourcing", "sourcing"]);
+  });
+
+  it("the people a company search finds join the list as the signal's, and their emails are looked up within the cap", async () => {
+    const list = await newList({ email_daily_cap: 5 });
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    await post(searchOf("bouw.nl").id, [ana]);
+
+    const { members } = await ok(`/api/lists/${list.id}/members`);
+    expect(members).toHaveLength(1);
+    expect(members[0]).toMatchObject({ full_name: "Ana de Vries", source_kind: "signal", source_id: monitor });
+    // The list's automatic lookup took her: emails only, within its cap.
+    expect(jobsFor("/api/jobs/enrich-lead")).toHaveLength(1);
+    expect(row("SELECT enrich_fields FROM leads WHERE full_name = 'Ana de Vries'").enrich_fields).toBe("email");
+    const [found] = await findings();
+    expect(found.search).toMatchObject({ status: "sourcing", lead_count: 1 });
+  });
+
+  it("a company is searched once: another signal that finds it takes the people already found, with no second search", async () => {
+    const first = await newMonitor(vansSignal);
+    await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: first } });
+    await record((await beginCheck(first)).id, [bouwFinding]);
+    await post(searchOf("bouw.nl").id, [ana]);
+
+    const other = await newList({ name: "Amsterdam" });
+    const second = await newMonitor({ ...vansSignal, name: "Plumbers" });
+    await ok(`/api/lists/${other.id}/sources`, { method: "POST", body: { kind: "signal", source_id: second } });
+    await record((await beginCheck(second)).id, [companyFinding("Bouw BV", "bouw.nl", { source_url: "https://news.example/bouw" })]);
+
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE company_domain IS NOT NULL").n).toBe(1);
+    expect(tasks).toHaveLength(1);
+    expect((await ok(`/api/lists/${other.id}/members`)).members.map((m: any) => m.full_name)).toEqual(["Ana de Vries"]);
+    // Someone found there later reaches both signals' lists.
+    await post(searchOf("bouw.nl").id, [jan]);
+    expect((await ok(`/api/lists/${other.id}/members`)).total).toBe(2);
+  });
+
+  it("a signal that feeds no list opens nothing until Find people, which opens the search once", async () => {
+    const monitor = await newMonitor(vansSignal);
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    expect(row("SELECT COUNT(*) AS n FROM runs").n).toBe(0);
+    const [found] = await findings();
+    expect(found.search).toBeNull();
+
+    const pressed = await ok(`/api/monitor-observations/${found.id}/search`, { method: "POST" });
+    expect(pressed.observation.search).toMatchObject({ status: "sourcing", lead_count: 0 });
+    await ok(`/api/monitor-observations/${found.id}/search`, { method: "POST" });
+    expect(row("SELECT COUNT(*) AS n FROM runs").n).toBe(1);
+    expect(tasks).toHaveLength(1);
+    // A person finding has no company to search.
+    const people = await newMonitor();
+    await record((await beginCheck(people)).id, [finding]);
+    const person = (await findings()).find((f) => f.person_name);
+    expect((await request(`/api/monitor-observations/${person!.id}/search`, { method: "POST" })).status).toBe(400);
+  });
+
+  it("attaching a signal searches the companies it found, newest first, up to its per-check limit; people already found join", async () => {
+    const monitor = await newMonitor({ ...vansSignal, max_per_check: 2 });
+    const check = await beginCheck(monitor);
+    await record(check.id, [bouwFinding]);
+    await finishCheck(check.id);
+    // Searched by hand before the signal fed any list, and someone was found.
+    const [bouw] = await findings();
+    await ok(`/api/monitor-observations/${bouw.id}/search`, { method: "POST" });
+    await post(searchOf("bouw.nl").id, [ana]);
+    // Three companies nobody searched, over two checks (each records at most 2).
+    const second = await beginCheck(monitor);
+    await record(second.id, [smitFinding, companyFinding("Bakker Bouw", "bakkerbouw.nl")]);
+    await finishCheck(second.id);
+    await record((await beginCheck(monitor)).id, [companyFinding("Eva Installaties", "eva.nl")]);
+    tasks.length = 0;
+
+    const list = await newList();
+    const attached = await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    expect(attached).toMatchObject({ added: 1, searching: 2 });
+    expect((await ok(`/api/lists/${list.id}/members`)).members.map((m: any) => m.full_name)).toEqual(["Ana de Vries"]);
+    expect(tasks).toHaveLength(1);
+    expect(searchOf("eva.nl")).toBeTruthy();
+    expect(searchOf("bakkerbouw.nl")).toBeTruthy();
+    expect(searchOf("smitbouw.nl")).toBeUndefined();
+  });
+
+  it("a company search is not a list source: refused by hand and left out of the searches offered", async () => {
+    const monitor = await newMonitor(vansSignal);
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    await ok(`/api/monitor-observations/${(await findings())[0].id}/search`, { method: "POST" });
+    const plain = await newSearch();
+    const list = await newList();
+    const refused = await request(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: searchOf("bouw.nl").id } });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain("Add that signal instead");
+    expect((await ok("/api/runs?searches=true")).runs.map((r: any) => r.id)).toEqual([plain.id]);
+    expect((await ok("/api/runs")).total).toBe(2);
+  });
+
+  it("a hand-off the agent refuses keeps the searches pending with the reason; each retries on its own", async () => {
+    const list = await newList();
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "agent_server_not_ready", detail: "Agent is waking" }, { status: 503 })));
+    await record((await beginCheck(monitor)).id, [bouwFinding, smitFinding]);
+    const [first] = await findings();
+    expect(first.search).toMatchObject({ status: "pending" });
+    expect(first.search.error).toContain("agent_server_not_ready");
+
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      tasks.push(JSON.parse(String(init?.body)));
+      return Response.json({ task_id: "t1", server_id: serverId, agent: "main", status: "queued" }, { status: 202 });
+    }));
+    await ok(`/api/runs/${first.search.id}/dispatch`, { method: "POST" });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].instruction).toContain(`- ${first.search.id}: `);
+    expect(tasks[0].instruction.match(/^- /gm)).toHaveLength(1);
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE status = 'pending'").n).toBe(1);
+  });
+
+  it("searches handed over together share one heartbeat, so the ones the agent has not reached never look stalled", async () => {
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    await record((await beginCheck(monitor)).id, [bouwFinding, smitFinding]);
+    const plain = await newSearch();
+    await ok(`/api/runs/${plain.id}/dispatch`, { method: "POST" });
+    // Twenty minutes of the agent working on Bouw BV, past the stall window.
+    db.prepare("UPDATE runs SET updated_at = datetime('now', '-20 minutes')").run();
+    const stale = async () => Object.fromEntries((await ok("/api/runs")).runs.map((r: any) => [r.company_domain ?? "plain", r.stale]));
+    expect(await stale()).toEqual({ "bouw.nl": 1, "smitbouw.nl": 1, plain: 1 });
+
+    await ok(`/api/runs/${searchOf("bouw.nl").id}`, { method: "PATCH", body: { status: "done" }, headers: AGENT });
+    expect(await stale()).toEqual({ "bouw.nl": 0, "smitbouw.nl": 0, plain: 1 });
+    // Posting people counts as progress too.
+    db.prepare("UPDATE runs SET updated_at = datetime('now', '-20 minutes')").run();
+    await post(searchOf("bouw.nl").id, [ana]);
+    expect(await stale()).toEqual({ "bouw.nl": 0, "smitbouw.nl": 0, plain: 1 });
+    // A search retried on its own leaves the batch: the old session's progress no longer vouches for it.
+    db.prepare("UPDATE runs SET updated_at = datetime('now', '-20 minutes')").run();
+    await ok(`/api/runs/${searchOf("smitbouw.nl").id}/dispatch`, { method: "POST" });
+    expect(searchOf("smitbouw.nl").dispatch_batch).toBeNull();
+    db.prepare("UPDATE runs SET updated_at = datetime('now', '-20 minutes')").run();
+    await ok(`/api/runs/${searchOf("bouw.nl").id}`, { method: "PATCH", body: { status: "done" }, headers: AGENT });
+    expect((await stale())["smitbouw.nl"]).toBe(1);
+  });
+
+  it("splits many companies across tasks so each instruction fits the agent's limit", () => {
+    const searches = Array.from({ length: 60 }, (_, i) => ({ id: crypto.randomUUID(), company_domain: `${"long-company-name-".repeat(5)}${i}.example` }));
+    const batches = companyBatches("https://prospector.example", searches);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) expect(batch.brief.length).toBeLessThanOrEqual(4000);
+    expect(batches.flatMap((b) => b.searches.map((s) => s.id))).toEqual(searches.map((s) => s.id));
   });
 });
 

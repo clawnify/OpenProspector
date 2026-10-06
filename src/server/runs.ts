@@ -1,8 +1,8 @@
 // Handing a run to the agent, shared by the dispatch route and by a list's
 // refresh, which starts a search again on its own schedule.
 
-import { get, run } from "./db.js";
-import { dispatchTask, sourcingBrief, type AgentEnv, type AgentServer } from "./agent.js";
+import { get, query, run } from "./db.js";
+import { companyBatches, companyBrief, dispatchTask, sourcingBrief, type AgentEnv, type AgentServer } from "./agent.js";
 import { salesNavigatorBrief } from "./sales-navigator.js";
 
 /**
@@ -45,6 +45,7 @@ interface DispatchableRun {
   status: string;
   source: string;
   auto_enrich: number;
+  company_domain: string | null;
   updated_at: string;
   stale: number;
 }
@@ -71,8 +72,9 @@ export async function dispatchRun(env: AgentEnv, appUrl: string, runId: string):
   }
   if (row.status === "done") return { ok: false, status: 409, error: "This search has already finished." };
 
-  const brief =
-    row.source === "sales_navigator"
+  const brief = row.company_domain
+    ? companyBrief(appUrl, [{ id: runId, company_domain: row.company_domain }])
+    : row.source === "sales_navigator"
       ? salesNavigatorBrief({ runId, url: row.icp_prompt, appUrl, includeEmails: row.auto_enrich === 1 })
       : sourcingBrief({ runId, prompt: row.icp_prompt, appUrl });
 
@@ -96,6 +98,61 @@ export async function dispatchRun(env: AgentEnv, appUrl: string, runId: string):
     return { ok: false, status: 502, error: result.error, brief, servers: result.servers ?? [] };
   }
 
-  await run("UPDATE runs SET status = 'sourcing', error = '', updated_at = datetime('now') WHERE id = ?", [runId]);
+  // A search retried on its own leaves any batch it was handed over in.
+  await run("UPDATE runs SET status = 'sourcing', error = '', dispatch_batch = NULL, updated_at = datetime('now') WHERE id = ?", [runId]);
   return { ok: true, taskId: result.taskId, serverId: result.serverId, duplicate: result.duplicate };
+}
+
+/**
+ * Hand new company searches to the agent, as few tasks as the instruction cap
+ * allows. Only searches still `pending` go. A batch the agent refuses keeps its
+ * searches pending with the reason, and each can be retried on its own with
+ * dispatchRun.
+ */
+export async function dispatchCompanySearches(env: AgentEnv, appUrl: string, runIds: string[]): Promise<{ started: number; failed: number }> {
+  const searches: { id: string; company_domain: string }[] = [];
+  // Chunked: D1 binds at most 100 parameters per statement.
+  for (let i = 0; i < runIds.length; i += 90) {
+    const chunk = runIds.slice(i, i + 90);
+    searches.push(...(await query<{ id: string; company_domain: string }>(
+      `SELECT id, company_domain FROM runs
+        WHERE id IN (${chunk.map(() => "?").join(", ")}) AND status = 'pending' AND company_domain IS NOT NULL
+        ORDER BY created_at, id`,
+      chunk,
+    )));
+  }
+  const serverId = await configuredServerId();
+  let started = 0;
+  let failed = 0;
+  for (const batch of companyBatches(appUrl, searches)) {
+    const ids = batch.searches.map((s) => s.id);
+    const marks = ids.map(() => "?").join(", ");
+    // New searches only ever reach here once, so the batch's first search
+    // and its size key it: a repeat of this same call is delivered once.
+    const key = `company-searches:${ids[0]}:${ids.length}`;
+    const result = await dispatchTask(env, { instruction: batch.brief, serverId, idempotencyKey: key });
+    if (result.ok) {
+      await run(
+        `UPDATE runs SET status = 'sourcing', error = '', dispatch_batch = ?, updated_at = datetime('now') WHERE id IN (${marks}) AND status = 'pending'`,
+        [key, ...ids],
+      );
+      started += ids.length;
+    } else {
+      await run(`UPDATE runs SET error = ? WHERE id IN (${marks})`, [result.error.slice(0, 2000), ...ids]);
+      failed += ids.length;
+    }
+  }
+  return { started, failed };
+}
+
+/**
+ * The agent reported on a run: the other searches handed over in the same task
+ * and not finished yet share the heartbeat (runs.dispatch_batch).
+ */
+export async function touchBatch(runId: string): Promise<void> {
+  await run(
+    `UPDATE runs SET updated_at = datetime('now')
+      WHERE dispatch_batch = (SELECT dispatch_batch FROM runs WHERE id = ?) AND status = 'sourcing' AND id != ?`,
+    [runId, runId],
+  );
 }

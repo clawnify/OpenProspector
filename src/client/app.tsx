@@ -291,6 +291,15 @@ export function App() {
     reportLocation(location.pathname + location.search);
   }, [location.pathname, location.search]);
 
+  // `/?run=<id>` opens Leads on one search, as a signal's "people to contact" link does.
+  useEffect(() => {
+    const run = new URLSearchParams(location.search).get("run");
+    if (run) {
+      setRunFilter(run);
+      setPage(1);
+    }
+  }, [location.search]);
+
   // Collapse folds the SDK sidebar to icons. The toggle lives here, not in
   // <AppNav>, because 0.2.0 has no slot for it; the proper home is the SDK.
   const [navCollapsed, setNavCollapsed] = useState(false);

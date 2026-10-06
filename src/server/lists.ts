@@ -155,19 +155,51 @@ export async function listsFedBy(kind: "search" | "signal", sourceId: string): P
   return rows.map((r) => r.list_id);
 }
 
-/** The search a run belongs to: itself, or the search it re-ran for a list. */
-export async function searchOf(runId: string): Promise<string | null> {
-  const row = await get<{ id: string; refresh_of: string | null }>("SELECT id, refresh_of FROM runs WHERE id = ?", [runId]);
-  return row ? row.refresh_of || row.id : null;
+/**
+ * Leads posted to a run join the lists its search feeds. A search opened for a
+ * company a signal found (runs.company_domain) also hands them to the lists of
+ * every signal that found that company. Returns the lists that grew.
+ */
+export async function joinFromRun(runId: string, leadIds: string[]): Promise<string[]> {
+  const found = await get<{ id: string; refresh_of: string | null; company_domain: string | null }>(
+    "SELECT id, refresh_of, company_domain FROM runs WHERE id = ?",
+    [runId],
+  );
+  if (!found || leadIds.length === 0) return [];
+  const search = found.refresh_of || found.id;
+  const grew = new Set<string>();
+  for (const listId of await listsFedBy("search", search)) {
+    if ((await addMembers(listId, leadIds, "search", search)) > 0) grew.add(listId);
+  }
+  if (found.company_domain) {
+    for (const monitorId of await signalsThatFound(found.company_domain)) {
+      for (const listId of await listsFedBy("signal", monitorId)) {
+        if ((await addMembers(listId, leadIds, "signal", monitorId)) > 0) grew.add(listId);
+      }
+    }
+  }
+  return [...grew];
 }
 
-/** Leads posted to a run join the lists its search feeds. Returns the lists that grew. */
-export async function joinFromRun(runId: string, leadIds: string[]): Promise<string[]> {
-  const search = await searchOf(runId);
-  if (!search || leadIds.length === 0) return [];
+/** The signals with a visible finding of this company. */
+export async function signalsThatFound(domain: string): Promise<string[]> {
+  const rows = await query<{ monitor_id: string }>(
+    "SELECT DISTINCT monitor_id FROM signal_observations WHERE json_extract(details, '$.subject.domain') = ? AND visible = 1",
+    [domain],
+  );
+  return rows.map((r) => r.monitor_id);
+}
+
+/** The people already found at a company join the lists of a signal that found it. Returns the lists that grew. */
+export async function joinCompany(monitorId: string, domain: string): Promise<string[]> {
+  const leads = await query<{ id: string }>(
+    "SELECT l.id FROM leads l JOIN runs r ON r.id = l.run_id WHERE r.company_domain = ? ORDER BY l.created_at, l.id",
+    [domain],
+  );
+  if (leads.length === 0) return [];
   const grew: string[] = [];
-  for (const listId of await listsFedBy("search", search)) {
-    if ((await addMembers(listId, leadIds, "search", search)) > 0) grew.push(listId);
+  for (const listId of await listsFedBy("signal", monitorId)) {
+    if ((await addMembers(listId, leads.map((l) => l.id), "signal", monitorId)) > 0) grew.push(listId);
   }
   return grew;
 }
@@ -183,9 +215,11 @@ export async function joinFromSignal(monitorId: string, leadId: string): Promise
 
 /**
  * The people a source already has, added when it is attached: every lead of
- * the search and its re-runs, or everyone a person already added to People
- * from the signal. Findings nobody reviewed before the signal was attached
- * stay where they are; from now on, its new ones join without review.
+ * the search and its re-runs, or, for a signal, everyone a person already added
+ * to People from it and everyone already found at the companies it found.
+ * Person findings nobody reviewed before the signal was attached stay where
+ * they are; from now on, its new ones join without review. (Its companies not
+ * searched yet get a search on attach: list-routes.ts.)
  */
 export async function backfill(listId: string, kind: "search" | "signal", sourceId: string): Promise<number> {
   const rows =
@@ -194,10 +228,18 @@ export async function backfill(listId: string, kind: "search" | "signal", source
           "SELECT id FROM leads WHERE run_id IN (SELECT id FROM runs WHERE id = ? OR refresh_of = ?) ORDER BY created_at, id",
           [sourceId, sourceId],
         )
-      : await query<{ id: string }>(
-          "SELECT lead_id AS id FROM signal_observations WHERE monitor_id = ? AND visible = 1 AND lead_id IS NOT NULL ORDER BY observed_at, id",
-          [sourceId],
-        );
+      : [
+          ...(await query<{ id: string }>(
+            "SELECT lead_id AS id FROM signal_observations WHERE monitor_id = ? AND visible = 1 AND lead_id IS NOT NULL ORDER BY observed_at, id",
+            [sourceId],
+          )),
+          ...(await query<{ id: string }>(
+            `SELECT l.id FROM leads l JOIN runs r ON r.id = l.run_id
+              WHERE r.company_domain IN (SELECT json_extract(details, '$.subject.domain') FROM signal_observations WHERE monitor_id = ? AND visible = 1)
+              ORDER BY l.created_at, l.id`,
+            [sourceId],
+          )),
+        ];
   return addMembers(listId, rows.map((r) => r.id), kind, sourceId);
 }
 

@@ -36,13 +36,50 @@ it.each(["own", "team", "post", "query"] as const)("preserves LinkedIn fields in
 
 it.each(["company", "person"] as const)("renders a custom %s with evidence and signal reason", type => {
   const details = CustomObservationInput.parse({ kind: "custom", subject: type === "company" ? { type, name: "SGM Magnetics", domain: "sgmmagnetics.com" } : { type, name: "Test Person", profile_url: "https://agency.example/team/person" }, source_url: "https://magazine.example/article", summary: "Relevant industry coverage", reason: "Matches the requested news topic", occurred_at: null });
-  const html = renderToStaticMarkup(<MemoryRouter><Finding item={{ ...details, id: "test", monitor_id: "test", lead_id: null, observed_at: "2026-09-14" }} onChanged={() => {}} /></MemoryRouter>);
+  const html = renderToStaticMarkup(<MemoryRouter><Finding item={{ ...details, id: "test", monitor_id: "test", lead_id: null, observed_at: "2026-09-14", search: null }} onChanged={() => {}} /></MemoryRouter>);
   expect(html).toContain(details.subject.name);
   expect(html).toContain(details.reason);
   expect(html).toContain('href="https://magazine.example/article"');
   expect(html).not.toContain("ICP fit");
-  if (type === "company") expect(html).not.toContain("Add to people");
-  else expect(html).toContain("Add to people");
+  if (type === "company") {
+    expect(html).not.toContain("Add to people");
+    expect(html).toContain("Find people");
+  } else {
+    expect(html).toContain("Add to people");
+    expect(html).not.toContain("Find people");
+  }
+});
+
+const company = CustomObservationInput.parse({ kind: "custom", subject: { type: "company", name: "Loodgieter.nl", domain: "loodgieter.nl" }, source_url: "https://www.loodgieter.nl/amsterdam", summary: "Runs electric service vans in Amsterdam", reason: "Shows its van fleet", occurred_at: null });
+const withSearch = (search: Record<string, unknown>) => renderToStaticMarkup(<MemoryRouter><Finding item={{ ...company, id: "o1", monitor_id: "m1", lead_id: null, observed_at: "2026-10-05",
+  search: { id: "r1", status: "done", error: "", lead_count: 0, stale: 0, ...search } }} onChanged={() => {}} /></MemoryRouter>);
+
+it.each([
+  [{ status: "done", lead_count: 2 }, "2 people to contact"],
+  [{ status: "done", lead_count: 1 }, "1 person to contact"],
+  [{ status: "done", lead_count: 0 }, "No one found to contact"],
+  [{ status: "sourcing" }, "Finding who to contact"],
+  [{ status: "sourcing", stale: 1 }, "stopped reporting"],
+  [{ status: "pending", error: "Choose an agent in Settings" }, "hand it to your agent: Choose an agent in Settings"],
+  [{ status: "failed", error: "Site blocked" }, "Search failed: Site blocked"],
+])("shows where the company's search stands: %o", (search, text) => {
+  const html = withSearch(search);
+  expect(html).toContain(text);
+  expect(html).not.toContain("Find people");
+  expect(html).not.toContain("Add to people");
+});
+
+it("links found people to Leads opened on that search, and offers a retry only where one helps", () => {
+  expect(withSearch({ status: "done", lead_count: 2 })).toContain('href="/?run=r1"');
+  expect(withSearch({ status: "done", lead_count: 2 })).not.toContain("Retry");
+  expect(withSearch({ status: "sourcing" })).not.toContain("Retry");
+  expect(withSearch({ status: "failed", error: "x" })).toContain("Retry");
+  expect(withSearch({ status: "sourcing", stale: 1 })).toContain("Retry");
+});
+
+it("asks a custom signal who to contact at the companies it finds; LinkedIn signals find people already", () => {
+  expect(renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />)).toContain("Who to contact at the companies it finds");
+  expect(renderToStaticMarkup(<MonitorForm kind="post" onClose={() => {}} onSaved={() => {}} />)).not.toContain("Who to contact at the companies");
 });
 
 it("asks how many new people a check may record, 25 to start", () => {
