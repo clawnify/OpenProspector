@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Pencil, Plus, RefreshCw } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Users } from "lucide-react";
 import { api, type AgentServer } from "../api";
-import { MONITOR_TEMPLATES, CUSTOM_MONITOR, MonitorEdit, MonitorInput, type Monitor, type MonitorConfig, type MonitorEditInput, type MonitorKind, type Observation } from "../../shared/monitors";
+import { MONITOR_TEMPLATES, CUSTOM_MONITOR, MonitorEdit, MonitorInput, type CompanySearch, type Monitor, type MonitorConfig, type MonitorEditInput, type MonitorKind, type Observation } from "../../shared/monitors";
 import { Badge, Button, Card, Chip, Dialog, Empty, Picker } from "./ui";
 
 const FREQUENCIES = { once: "On demand", daily: "Daily", weekly: "Weekly" };
@@ -51,6 +51,14 @@ function MaxField({ kind, value, onChange }: { kind: MonitorKind; value: string;
   </label>;
 }
 
+/** Custom signals only: who a company search looks for at a company the signal finds. */
+function WhoField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <label className="block text-sm">Who to contact at the companies it finds (optional)
+    <input className="input mt-1 w-full" value={value} maxLength={300} placeholder="For example: the owner. At larger firms, the operations manager." onChange={e => onChange(e.target.value)} />
+    <span className="mt-1 block text-xs text-muted-foreground">When it finds a company, a search finds this person there. Left empty: the owner, or at a larger company the people who would decide.</span>
+  </label>;
+}
+
 /** An ISO time as a datetime-local value, in the viewer's time zone. */
 function localInput(iso: string | null) {
   if (!iso) return "";
@@ -77,6 +85,7 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
   const [includeExisting, setIncludeExisting] = useState(true);
   const [ends, setEnds] = useState("");
   const [max, setMax] = useState(String(DEFAULT_MAX));
+  const [who, setWho] = useState("");
   const agentList = useSignalAgents();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -90,7 +99,7 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
     setError(null);
     if (!request.current) {
       if (ends && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
-      const parsed = MonitorInput.safeParse({ name, kind, source, icp, server_id: serverId, frequency, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max) });
+      const parsed = MonitorInput.safeParse({ name, kind, source, icp, server_id: serverId, frequency, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max), who_to_contact: who });
       if (!parsed.success) { setError(parsed.error.issues.map(i => i.message).join(" ")); return; }
       request.current = { id: crypto.randomUUID(), checkId: crypto.randomUUID(), config: parsed.data };
       setSubmitted(true);
@@ -124,6 +133,7 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
         {kind !== "custom" && <label className="block text-sm">Who should we look for?
           <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} placeholder="For example: founders of small marketing agencies serving B2B companies" maxLength={1000} onChange={e => setIcp(e.target.value)} required />
         </label>}
+        {kind === "custom" && <WhoField value={who} onChange={setWho} />}
         <div className="grid gap-4 md:grid-cols-2">
           <AgentField value={serverId} onChange={setServerId} list={agentList} />
           <div className="block text-sm">Check frequency
@@ -159,6 +169,7 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   const [frequency, setFrequency] = useState(m.frequency);
   const [ends, setEnds] = useState(localInput(m.ends_at));
   const [max, setMax] = useState(String(m.max_per_check));
+  const [who, setWho] = useState(m.who_to_contact);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<{ id: string; body: string } | null>(null);
@@ -166,7 +177,7 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   async function submit() {
     setError(null);
     if (ends && frequency !== "once" && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
-    const parsed = MonitorEdit.safeParse({ name, icp, server_id: serverId, frequency, max_per_check: Number(max),
+    const parsed = MonitorEdit.safeParse({ name, icp, server_id: serverId, frequency, max_per_check: Number(max), who_to_contact: who,
       ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, ...(custom ? { source } : {}) });
     if (!parsed.success) { setError(parsed.error.issues.map(i => i.message).join(" ")); return; }
     const body = JSON.stringify(parsed.data);
@@ -178,9 +189,12 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   }
   return <Dialog open={open} onOpenChange={onOpenChange} title="Edit signal" submitLabel={busy ? "Saving…" : "Save"} submitting={busy} onSubmit={() => void submit()}>
     <label className="block text-sm">Name<input className="input mt-1 w-full" value={name} maxLength={100} onChange={e => setName(e.target.value)} required /></label>
-    {custom ? <label className="block text-sm">Prompt
-      <textarea className="input mt-1 min-h-32 w-full py-2" rows={5} value={source} maxLength={2500} onChange={e => setSource(e.target.value)} required />
-    </label> : <>
+    {custom ? <>
+      <label className="block text-sm">Prompt
+        <textarea className="input mt-1 min-h-32 w-full py-2" rows={5} value={source} maxLength={2500} onChange={e => setSource(e.target.value)} required />
+      </label>
+      <WhoField value={who} onChange={setWho} />
+    </> : <>
       <label className="block text-sm">Who should we look for?
         <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} maxLength={1000} onChange={e => setIcp(e.target.value)} required />
       </label>
@@ -275,6 +289,36 @@ export function SignalMonitors() {
   </section>;
 }
 
+/**
+ * Where the search for the person to contact at a finding's company stands.
+ * One search per company, so every finding of that company shows the same one.
+ */
+function CompanyPeople({ item, search, onChanged }: { item: Observation; search: CompanySearch | null; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const act = (fn: () => Promise<unknown>) => {
+    setBusy(true); setError(null);
+    void fn().then(onChanged).catch(e => setError((e as Error).message)).finally(() => setBusy(false));
+  };
+  const retry = <Button disabled={busy} onClick={() => act(() => api.dispatchRun(search!.id))}>Retry</Button>;
+  let state: ReactNode;
+  if (!search) state = <Button disabled={busy} onClick={() => act(() => api.findPeople(item.id))}><Users size={14} />Find people</Button>;
+  else if (search.status === "pending") state = search.error
+    ? <><span className="text-destructive">Couldn’t hand it to your agent: {search.error}</span>{retry}</>
+    : <span className="text-muted-foreground">Waiting for your agent</span>;
+  else if (["sourcing", "enriching"].includes(search.status)) state = search.stale
+    ? <><span className="text-muted-foreground">Your agent stopped reporting on this search.</span>{retry}</>
+    : <span className="text-muted-foreground">Finding who to contact…</span>;
+  else if (search.status === "done") state = search.lead_count > 0
+    ? <Link className="underline" to={`/?run=${search.id}`}>{search.lead_count} {search.lead_count === 1 ? "person" : "people"} to contact</Link>
+    : <span className="text-muted-foreground">No one found to contact</span>;
+  else state = <><span className="text-destructive">Search failed{search.error ? `: ${search.error}` : ""}</span>{retry}</>;
+  return <div className="flex flex-wrap items-center gap-3 text-sm">
+    {state}
+    {error && <p role="alert" className="w-full text-sm text-destructive">{error}</p>}
+  </div>;
+}
+
 export function Finding({ item, onChanged }: { item: Observation; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -290,6 +334,7 @@ export function Finding({ item, onChanged }: { item: Observation; onChanged: () 
     <p className="text-sm"><span className="font-medium">Outreach context: </span>{item.outreach_context}</p>
     </>}
     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground"><a className="underline" href={item.source_url} target="_blank" rel="noreferrer">View evidence</a><span>{item.occurred_at ? `Event: ${item.occurred_at}` : "Event date unknown"}</span><span>Observed: {item.observed_at} UTC</span></div>
+    {"kind" in item && item.subject.type === "company" && <CompanyPeople item={item} search={item.search} onChanged={onChanged} />}
     {!("kind" in item && item.subject.type === "company") && (item.lead_id ? <Link className="text-sm underline" to="/">Added to people</Link> : <Button disabled={busy} onClick={() => { setBusy(true); setError(null); void api.promoteObservation(item.id).then(onChanged).catch(e => setError(e.message)).finally(() => setBusy(false)); }}><Plus size={14} />Add to people</Button>)}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </article>;

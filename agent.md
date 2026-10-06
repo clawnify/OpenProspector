@@ -172,6 +172,18 @@ many emails it may look up a day.
 - Never start lookups or refreshes yourself. A list looks up emails within its
   daily cap and refreshes on its own schedule.
 
+### Company searches
+
+A custom signal can find companies rather than people. The app then opens one
+search per company (the run carries `company_domain`) and hands you a batch of
+them in one task: find the person to contact at each. Its `icp_prompt` says who
+to look for and why the company matters.
+
+- Read the company's own website first (about, team, contact, imprint), then
+  the company registry. Small-business owners rarely have a LinkedIn profile.
+- Nobody named anywhere you can read is `done` with no leads, never a guess.
+- The people you post join the lists of every signal that found the company.
+
 ## Reading the attempt log
 
 | Outcome | Meaning |

@@ -5,6 +5,8 @@ import { MonitorEdit, MonitorInput, SignalObservationInput, linkedinUrl, type Mo
 import { normalizeDomain, normalizeUrl } from "./signals.js";
 import { signalBrief } from "./signal-brief.js";
 import { afterJoin, joinFromSignal, listsFedBy } from "./lists.js";
+import { STALE_AFTER } from "./runs.js";
+import { companyOf, searchCompanies, type Company } from "./company-search.js";
 
 type Env = { Bindings: AgentsEnv };
 interface MonitorRow { id: string; config: string; create_request: string; active: number; schedule_id: string | null; schedule_error: string | null; created_at: string }
@@ -293,11 +295,12 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
     // Accept the old LinkedIn shape on custom monitors: already-running tasks
     // and native schedules may still carry the previously attached snapshot.
     let recorded = 0;
-    // A signal that feeds a list adds its new people to it as they are found:
-    // attaching it to the list was the review. Baseline findings stay hidden,
-    // and companies never become people.
+    // A signal that feeds a list adds its new people to it as they are found,
+    // and opens a search for the person to contact at each new company:
+    // attaching it to the list was the review. Baseline findings stay hidden.
     const feeds = !check.baseline && (await listsFedBy("signal", check.monitor_id)).length > 0;
     const grew = new Set<string>();
+    const companies: Company[] = [];
     const cap = config(monitor).max_per_check;
     for (const observation of observations) {
       const fingerprint = await observationFingerprint(observation);
@@ -316,8 +319,15 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
         if (feeds && isPerson(observation)) {
           const leadId = await promoteObservation(inserted.id, JSON.stringify(observation));
           for (const listId of await joinFromSignal(check.monitor_id, leadId)) grew.add(listId);
+        } else if (feeds) {
+          const company = companyOf(JSON.stringify(observation));
+          if (company) companies.push(company);
         }
       }
+    }
+    if (companies.length) {
+      const { name, who_to_contact } = config(monitor);
+      for (const listId of await searchCompanies(c.env, new URL(c.req.url).origin, { id: monitor.id, name, who_to_contact }, companies)) grew.add(listId);
     }
     await afterJoin(c.env, new URL(c.req.url).origin, [...grew]);
     if (check.baseline) return c.json({ recorded, baseline: true, remaining: null, limit_reached: false }, 200);
@@ -325,11 +335,20 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
     const remaining = Math.max(0, cap - (found?.n ?? 0));
     return c.json({ recorded, baseline: false, remaining, limit_reached: remaining === 0 }, 200);
   });
+interface SearchColumns { search_id: string | null; search_status: string; search_error: string; search_lead_count: number; search_stale: number }
+/** Findings with the search opened for the company each names, shared by every finding of that company. */
+const FINDINGS = `SELECT o.*, r.id AS search_id, r.status AS search_status, r.error AS search_error, r.lead_count AS search_lead_count,
+    (CASE WHEN r.status IN ('sourcing', 'enriching') AND r.updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS search_stale
+  FROM signal_observations o LEFT JOIN runs r ON r.company_domain = json_extract(o.details, '$.subject.domain')`;
+function finding({ details, search_id, search_status, search_error, search_lead_count, search_stale, ...row }: ObservationRow & SearchColumns): Observation {
+  const search = search_id ? { id: search_id, status: search_status, error: search_error ?? "", lead_count: search_lead_count, stale: search_stale } : null;
+  return { ...row, ...JSON.parse(details), search } as Observation;
+}
 monitorRoutes.get("/api/monitor-observations", async c => {
   const page = Page.parse(c.req.query("page"));
-  const rows = await query<ObservationRow>("SELECT * FROM signal_observations WHERE visible = 1 ORDER BY observed_at DESC, rowid DESC LIMIT ? OFFSET ?", [LIMIT, (page - 1) * LIMIT]);
+  const rows = await query<ObservationRow & SearchColumns>(`${FINDINGS} WHERE o.visible = 1 ORDER BY o.observed_at DESC, o.rowid DESC LIMIT ? OFFSET ?`, [STALE_AFTER, LIMIT, (page - 1) * LIMIT]);
   const count = await get<{ total: number }>("SELECT COUNT(*) total FROM signal_observations WHERE visible = 1");
-  return c.json({ observations: rows.map(({ details, ...row }) => ({ ...row, ...JSON.parse(details) } as Observation)), total: count?.total ?? 0, page, limit: LIMIT });
+  return c.json({ observations: rows.map(finding), total: count?.total ?? 0, page, limit: LIMIT });
 });
 /** Whether a finding is about a person, the only kind that can become a lead. */
 function isPerson(data: z.infer<typeof SignalObservationInput>): boolean {
@@ -361,6 +380,22 @@ export async function promoteObservation(observationId: string, details: string)
   return leadId;
 }
 
+/**
+ * "Find people": the search for the person to contact at the company a finding
+ * names. Opens it and hands it to the agent, or, when another finding of that
+ * company already opened one, uses that search and its people.
+ */
+monitorRoutes.post("/api/monitor-observations/:id/search", async c => {
+  const row = await get<ObservationRow>("SELECT * FROM signal_observations WHERE id = ? AND visible = 1", [UUID.parse(c.req.param("id"))]);
+  if (!row) throw new InputError("Finding not found", 404);
+  const company = companyOf(row.details);
+  if (!company) throw new InputError("Only a company finding has people to find.");
+  const { name, who_to_contact } = config(await readMonitor(row.monitor_id));
+  const origin = new URL(c.req.url).origin;
+  await afterJoin(c.env, origin, await searchCompanies(c.env, origin, { id: row.monitor_id, name, who_to_contact }, [company]));
+  const updated = await get<ObservationRow & SearchColumns>(`${FINDINGS} WHERE o.id = ?`, [STALE_AFTER, row.id]);
+  return c.json({ observation: finding(updated!) });
+});
 monitorRoutes.post("/api/monitor-observations/:id/lead", async c => {
   const row = await get<ObservationRow>("SELECT * FROM signal_observations WHERE id = ? AND visible = 1", [UUID.parse(c.req.param("id"))]);
   if (!row) throw new InputError("Finding not found", 404);

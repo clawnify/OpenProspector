@@ -16,6 +16,8 @@ import { verifyDelivery } from "@clawnify/queue";
 import { get, query, run } from "./db.js";
 import { LeadSchema } from "./lead-schema.js";
 import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER } from "./runs.js";
+import { searchCompanies, unsearchedCompanies } from "./company-search.js";
+import { MonitorInput } from "../shared/monitors.js";
 import {
   REFRESH,
   addMembers,
@@ -470,18 +472,34 @@ listRoutes.post("/api/lists/:id/sources", async (c) => {
   const list = await readList(c.req.param("id"));
   const input = SourceInput.parse(await body(c));
   let sourceId = input.source_id;
+  let signal: { config: string } | null = null;
   if (input.kind === "search") {
-    const search = await get<{ id: string; refresh_of: string | null }>("SELECT id, refresh_of FROM runs WHERE id = ?", [sourceId]);
+    const search = await get<{ id: string; refresh_of: string | null; company_domain: string | null }>(
+      "SELECT id, refresh_of, company_domain FROM runs WHERE id = ?",
+      [sourceId],
+    );
     if (!search) throw new InputError("Search not found", 404);
+    // Its people already reach the lists of the signals that found the company.
+    if (search.company_domain) throw new InputError("This search was opened for one company a signal found. Add that signal instead.");
     // A re-run stands for the search it repeated.
     sourceId = search.refresh_of || search.id;
-  } else if (!(await get("SELECT id FROM signal_monitors WHERE id = ?", [sourceId]))) {
-    throw new InputError("Signal not found", 404);
+  } else {
+    signal = (await get<{ config: string }>("SELECT config FROM signal_monitors WHERE id = ?", [sourceId])) ?? null;
+    if (!signal) throw new InputError("Signal not found", 404);
   }
   await run("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [list.id, input.kind, sourceId]);
   const added = await backfill(list.id, input.kind, sourceId);
+  // A signal's companies nobody searched yet get a search now, newest first, as
+  // many as one of its checks may record: attaching it is the review.
+  let searching = 0;
+  if (signal) {
+    const cfg = MonitorInput.parse(JSON.parse(signal.config));
+    const companies = await unsearchedCompanies(sourceId, cfg.max_per_check);
+    searching = companies.length;
+    if (companies.length) await searchCompanies(c.env, origin(c), { id: sourceId, name: cfg.name, who_to_contact: cfg.who_to_contact }, companies);
+  }
   if (added > 0) await afterJoin(c.env, origin(c), [list.id]);
-  return c.json({ source: { kind: input.kind, source_id: sourceId }, added }, 201);
+  return c.json({ source: { kind: input.kind, source_id: sourceId }, added, searching }, 201);
 });
 
 listRoutes.delete("/api/lists/:id/sources/:kind/:sourceId", async (c) => {

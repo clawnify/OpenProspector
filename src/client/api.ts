@@ -79,6 +79,8 @@ export interface Run {
   auto_enrich: number;
   /** Set on a re-run a list's refresh started: the search it repeated. */
   refresh_of?: string | null;
+  /** Set on a search opened for one company a signal found. */
+  company_domain?: string | null;
 }
 
 export interface Provider {
@@ -205,6 +207,7 @@ export const api = {
   interruptCheck: (id: string) => req<{ ok: boolean }>(`/api/monitor-checks/${id}/interrupt`, { method: "POST" }),
   observations: (page = 1) => req<{ observations: Observation[]; total: number; page: number; limit: number }>(`/api/monitor-observations?page=${page}`),
   promoteObservation: (id: string) => req<{ lead_id: string }>(`/api/monitor-observations/${id}/lead`, { method: "POST" }),
+  findPeople: (id: string) => req<{ observation: Observation }>(`/api/monitor-observations/${id}/search`, { method: "POST" }),
   providers: (withCredits = false) =>
     req<{ providers: Provider[]; waterfalls: Record<string, string[]>; cache_max_age_days: number }>(
       `/api/providers${withCredits ? "?credits=true" : ""}`,
@@ -248,7 +251,7 @@ export const api = {
     req<{ list: ProspectList }>(`/api/lists/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteList: (id: string) => req<{ ok: boolean }>(`/api/lists/${id}`, { method: "DELETE" }),
   addListSource: (id: string, kind: "search" | "signal", source_id: string) =>
-    req<{ added: number }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
+    req<{ added: number; searching: number }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
   removeListSource: (id: string, kind: "search" | "signal", source_id: string) =>
     req<{ ok: boolean }>(`/api/lists/${id}/sources/${kind}/${encodeURIComponent(source_id)}`, { method: "DELETE" }),
   addToList: (id: string, lead_ids: string[]) =>

@@ -211,7 +211,7 @@ function sourceLine(s: ListSource): { text: string; tone: "neutral" | "warning" 
     if (s.schedule_error) return { text: `Its schedule has a problem: ${s.schedule_error}`, tone: "danger" };
     if (s.active === false) return { text: "Paused. New people join again when it is resumed.", tone: "neutral" };
     const freq = s.frequency === "daily" ? "Checks every day" : s.frequency === "weekly" ? "Checks every week" : "Checks when you run it";
-    return { text: `${freq}, on its own schedule. New people it finds join without review.`, tone: "neutral" };
+    return { text: `${freq}, on its own schedule. New people it finds join without review, and so do the people found at the companies it finds.`, tone: "neutral" };
   }
   const last = s.last_refresh;
   if (!last) return { text: "Not run again yet", tone: "neutral" };
@@ -230,7 +230,14 @@ function sourceLine(s: ListSource): { text: string; tone: "neutral" | "warning" 
 }
 
 /** Searches and signals to add, in one combobox with a group each. */
-function AddSource({ listId, existing, onAdded }: { listId: string; existing: ListSource[]; onAdded: (added: number) => void }) {
+/** What attaching a source did: people who joined, and companies it found whose people are being looked for. */
+function addedMessage(added: number, searching: number): string {
+  const people = added ? ` ${added} ${added === 1 ? "person" : "people"} it already found joined.` : "";
+  const companies = searching ? ` Finding who to contact at ${searching} ${searching === 1 ? "company" : "companies"} it found.` : "";
+  return `Added.${people}${companies}`;
+}
+
+function AddSource({ listId, existing, onAdded }: { listId: string; existing: ListSource[]; onAdded: (added: number, searching: number) => void }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [monitors, setMonitors] = useState<Monitor[] | null>(null);
@@ -252,7 +259,8 @@ function AddSource({ listId, existing, onAdded }: { listId: string; existing: Li
   async function add(kind: "search" | "signal", id: string) {
     setOpen(false);
     try {
-      onAdded((await api.addListSource(listId, kind, id)).added);
+      const r = await api.addListSource(listId, kind, id);
+      onAdded(r.added, r.searching);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -465,7 +473,7 @@ export function ListDetail() {
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <Card>
             <Zone>
-              <CardTitle right={<AddSource listId={id} existing={sources} onAdded={(n) => void act(async () => undefined, n ? `Added. ${n} ${n === 1 ? "person" : "people"} it already found joined.` : "Added.")} />}>
+              <CardTitle right={<AddSource listId={id} existing={sources} onAdded={(n, searching) => void act(async () => undefined, addedMessage(n, searching))} />}>
                 Sources
               </CardTitle>
             </Zone>

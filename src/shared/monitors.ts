@@ -31,6 +31,8 @@ export const MonitorInput = z.object({
   ends_at: z.string().datetime().nullable(),
   /** New findings a check may record; the rest wait for the next check. */
   max_per_check: z.number().int().min(1).max(100).default(25),
+  /** Who to look for at a company it finds, when the search opened for it runs. */
+  who_to_contact: z.string().trim().max(300).default(""),
 }).strict().superRefine((v, ctx) => {
   if (v.kind !== "custom" && v.icp.length < 3)
     ctx.addIssue({ code: "custom", path: ["icp"], message: "Describe who we should look for." });
@@ -51,7 +53,7 @@ export type MonitorConfig = z.infer<typeof MonitorInput>;
  * its research prompt, so it can change.
  */
 export const MonitorEdit = MonitorInput.innerType()
-  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true })
+  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true, who_to_contact: true })
   .extend({ source: MonitorInput.innerType().shape.source.optional() }).strict();
 export type MonitorEditInput = z.infer<typeof MonitorEdit>;
 export interface Monitor extends MonitorConfig {
@@ -99,6 +101,10 @@ export const CustomObservationInput = z.object({
   occurred_at: z.string().datetime().nullable(),
 }).strict();
 export const SignalObservationInput = z.union([ObservationInput, CustomObservationInput]);
+/** The search opened for the company a finding names, if there is one. */
+export interface CompanySearch { id: string; status: string; error: string; lead_count: number; stale: number }
 export type Observation = z.infer<typeof SignalObservationInput> & {
   id: string; monitor_id: string; observed_at: string; lead_id: string | null;
+  /** Company findings only. Shared by every finding of that company. */
+  search: CompanySearch | null;
 };

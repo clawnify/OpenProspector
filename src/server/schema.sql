@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS runs (
   -- original, never another refresh). Its leads join the lists that search
   -- feeds, exactly as the original's did.
   refresh_of TEXT,
+  -- Set on a search opened for one company a signal found: who to contact
+  -- there. One search per company, whichever signals find it, so a company is
+  -- never researched twice (idx_runs_company).
+  company_domain TEXT,
+  -- Company searches handed to the agent together, in one task, share this
+  -- key and so one heartbeat: progress on any of them shows the session is
+  -- alive, so the ones it has not reached yet never look stalled.
+  dispatch_batch TEXT,
   lead_count INTEGER NOT NULL DEFAULT 0,
   -- Running total from the attempt ledger; shown as "what this search cost you".
   credits_spent INTEGER NOT NULL DEFAULT 0,
@@ -32,6 +40,9 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_company ON runs(company_domain) WHERE company_domain IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_runs_batch ON runs(dispatch_batch) WHERE dispatch_batch IS NOT NULL;
 
 -- A saved discovery instruction, not a finding. The agent's native scheduler
 -- owns timing; this row owns source, ICP, baseline and the app's stop gate.
@@ -68,6 +79,10 @@ CREATE TABLE IF NOT EXISTS signal_observations (
   UNIQUE(monitor_id, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_observations_feed ON signal_observations(visible, observed_at);
+-- The signals that found a company, by its domain: their lists take the people
+-- its search finds. An index on the finding itself, so findings recorded before
+-- company searches existed are matched too.
+CREATE INDEX IF NOT EXISTS idx_signal_observations_company ON signal_observations(json_extract(details, '$.subject.domain'));
 -- Counts a check's new findings against the monitor's max_per_check.
 CREATE INDEX IF NOT EXISTS idx_signal_observations_check ON signal_observations(check_id, visible);
 

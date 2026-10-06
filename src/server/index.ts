@@ -22,7 +22,7 @@ import { EXPORT_COLUMNS, columnsFor, toCsv, toExportRows, checkDestination, safe
 import { ageDays, dedupeKey, isLive, normalizeDomain, stackCounts } from "./signals.js";
 import { dispatchAvailable, listAgentServers } from "./agent.js";
 import { parseSalesNavigatorUrl } from "./sales-navigator.js";
-import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER, configuredServerId, dispatchRun } from "./runs.js";
+import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER, configuredServerId, dispatchRun, touchBatch } from "./runs.js";
 import { LeadSchema } from "./lead-schema.js";
 import { afterJoin, joinFromRun } from "./lists.js";
 import { listRoutes } from "./list-routes.js";
@@ -89,6 +89,9 @@ const RunSchema = z
     enrich_fields: z.string().openapi({ description: "Comma-separated contact fields this run buys: 'email,phone' or 'email'" }),
     auto_enrich: z.number().int().openapi({ description: "1 when enrichment starts by itself once the list is in" }),
     refresh_of: z.string().nullable().optional().openapi({ description: "Set on a re-run a list's refresh started: the search it repeated" }),
+    company_domain: z.string().nullable().optional().openapi({
+      description: "Set on a search opened for one company a signal found: find the person to contact there (its icp_prompt says who and why). One per company.",
+    }),
     lead_count: z.number().int(),
     credits_spent: z.number().int(),
     error: z.string(),
@@ -478,7 +481,9 @@ const listRuns = createRoute({
   summary: "List runs with pagination",
   request: {
     query: PaginationQuery.extend({
-      searches: z.string().optional().openapi({ description: "'true' for searches only, leaving out the re-runs a list's refresh starts" }),
+      searches: z.string().optional().openapi({
+        description: "'true' for searches only, leaving out the re-runs a list's refresh starts and the searches opened for one company a signal found",
+      }),
     }),
   },
   responses: {
@@ -497,7 +502,10 @@ app.openapi(listRuns, async (c) => {
   const q = c.req.valid("query");
   const { page, limit, offset } = paging(q);
   const search = (q.search || "").trim();
-  const conditions = [...(search ? ["icp_prompt LIKE ?"] : []), ...(q.searches === "true" ? ["refresh_of IS NULL"] : [])];
+  const conditions = [
+    ...(search ? ["icp_prompt LIKE ?"] : []),
+    ...(q.searches === "true" ? ["refresh_of IS NULL", "company_domain IS NULL"] : []),
+  ];
   const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
   const params = search ? [`%${search}%`] : [];
 
@@ -581,6 +589,7 @@ app.openapi(patchRun, async (c) => {
   // rows actually present.
   sets.push("updated_at = datetime('now')");
   await run(`UPDATE runs SET ${sets.join(", ")} WHERE id = ?`, [...params, id]);
+  await touchBatch(id);
 
   const updated = (await get<RunRow>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, id]))!;
   return c.json({ run: updated }, 200);
@@ -1123,6 +1132,7 @@ app.openapi(importLeads, async (c) => {
       "UPDATE runs SET lead_count = (SELECT COUNT(*) FROM leads WHERE run_id = ?), updated_at = datetime('now') WHERE id = ?",
       [runId, runId],
     );
+    await touchBatch(runId);
     // The lists this search feeds take them in, and look up what their caps allow.
     const grew = await joinFromRun(runId, ids);
     await afterJoin(c.env, new URL(c.req.url).origin, grew);
