@@ -89,9 +89,13 @@ interface Identity {
   linkedin_url: string | null;
   full_name: string | null;
   domain: string | null;
+  email: string | null;
 }
 
-/** The same person, whichever lead row they arrived on: one profile, or one name at one domain. */
+/**
+ * The same person, whichever lead row they arrived on: one profile, or one
+ * name at one domain. A company's inbox has no name: its address is what it is.
+ */
 function identityKeys(l: Identity): string[] {
   const keys: string[] = [];
   const profile = (l.linkedin_url || "").trim().toLowerCase();
@@ -99,6 +103,8 @@ function identityKeys(l: Identity): string[] {
   const name = (l.full_name || "").trim().toLowerCase();
   const domain = (l.domain || "").trim().toLowerCase();
   if (name && domain) keys.push(`n:${name}|${domain}`);
+  const email = (l.email || "").trim().toLowerCase();
+  if (!name && email) keys.push(`e:${email}`);
   return keys;
 }
 
@@ -116,7 +122,7 @@ export async function addMembers(listId: string, leadIds: string[], kind: "searc
   for (let i = 0; i < ids.length; i += CHUNK) {
     const chunk = ids.slice(i, i + CHUNK);
     const leads = await query<Identity>(
-      `SELECT id, linkedin_url, full_name, domain FROM leads WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+      `SELECT id, linkedin_url, full_name, domain, email FROM leads WHERE id IN (${chunk.map(() => "?").join(", ")})`,
       chunk,
     );
     const fresh = leads.filter((l) => {
@@ -139,6 +145,7 @@ export async function addMembers(listId: string, leadIds: string[], kind: "searc
              WHERE m.list_id = ? AND (
                (l.linkedin_url != '' AND lower(o.linkedin_url) = lower(l.linkedin_url))
                OR (l.full_name != '' AND l.domain != '' AND lower(o.full_name) = lower(l.full_name) AND lower(o.domain) = lower(l.domain))
+               OR (l.full_name = '' AND COALESCE(l.email, '') != '' AND lower(o.email) = lower(l.email))
              ))
        ON CONFLICT (list_id, lead_id) DO NOTHING`,
       [listId, new Date().toISOString(), kind, sourceId, ...fresh.map((l) => l.id), listId],

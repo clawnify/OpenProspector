@@ -18,6 +18,7 @@ import { LeadSchema } from "./lead-schema.js";
 import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER } from "./runs.js";
 import { searchCompanies, unsearchedCompanies } from "./company-search.js";
 import { MonitorInput } from "../shared/monitors.js";
+import { INBOX_PARTS, inboxSql } from "../shared/inbox.js";
 import {
   REFRESH,
   addMembers,
@@ -96,6 +97,9 @@ const MemberSchema = LeadSchema.extend({
   added_at: z.string(),
   source_kind: z.enum(["search", "signal", "manual"]),
   source_id: z.string().openapi({ description: "The search (run id) or signal (monitor id) that added them; empty when added by hand" }),
+  email_kind: z.enum(["person", "inbox"]).nullable().openapi({
+    description: "inbox: a company's public address (info@, contact@), not a person's: write to it as to the company, with no first name. Null without an email.",
+  }),
 }).openapi("ListMember");
 
 const ConsumerSchema = z
@@ -286,6 +290,9 @@ listRoutes.openapi(
       params: z.object({ id: z.string() }),
       query: Page.extend({
         email_verified: z.string().optional().openapi({ description: "'true' for people with a verified email only" }),
+        email_kind: z.enum(["person", "inbox"]).optional().openapi({
+          description: "person: a named person's address. inbox: a company's public address (info@, contact@), with no name. Leave out for both.",
+        }),
       }),
     },
     responses: {
@@ -305,17 +312,20 @@ listRoutes.openapi(
     const q = c.req.valid("query");
     const { page, limit, offset } = paging(q);
     const verified = q.email_verified === "true" ? " AND d.email_verified = 1" : "";
+    const kind = q.email_kind ? ` AND d.email != '' AND ${q.email_kind === "inbox" ? "" : "NOT "}${inboxSql("d.email")}` : "";
+    const kindParams = q.email_kind ? INBOX_PARTS : [];
     const rows = await query<z.infer<typeof MemberSchema>>(
       `SELECT d.*, (CASE WHEN d.enrich_status = 'running' AND d.updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale,
+              (CASE WHEN COALESCE(d.email, '') = '' THEN NULL WHEN ${inboxSql("d.email")} THEN 'inbox' ELSE 'person' END) AS email_kind,
               m.added_at, m.source_kind, m.source_id
          FROM list_members m JOIN leads d ON d.id = m.lead_id
-        WHERE m.list_id = ?${verified}
+        WHERE m.list_id = ?${verified}${kind}
         ORDER BY m.added_at, m.lead_id LIMIT ? OFFSET ?`,
-      [STRANDED_AFTER, list.id, limit, offset],
+      [STRANDED_AFTER, ...INBOX_PARTS, list.id, ...kindParams, limit, offset],
     );
     const total = await get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM list_members m JOIN leads d ON d.id = m.lead_id WHERE m.list_id = ?${verified}`,
-      [list.id],
+      `SELECT COUNT(*) AS n FROM list_members m JOIN leads d ON d.id = m.lead_id WHERE m.list_id = ?${verified}${kind}`,
+      [list.id, ...kindParams],
     );
     return c.json({ members: rows, total: total?.n ?? 0, page, limit }, 200);
   },

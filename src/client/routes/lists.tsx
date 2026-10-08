@@ -17,6 +17,7 @@ import {
   type Run,
 } from "../api";
 import type { Monitor } from "../../shared/monitors";
+import { isInbox } from "../../shared/inbox";
 import { Button, Card, CardTitle, Chip, Dialog, Empty, Picker, Popover, PopoverContent, PopoverTrigger, Tooltip, Zone } from "../components/ui";
 import { StatusBadge } from "../components/leads-table";
 
@@ -582,7 +583,7 @@ export function ListDetail() {
                 {(members?.members ?? []).map((m) => (
                   <tr key={m.id} className="h-11 border-b border-border hover:bg-muted">
                     <td className="px-4 py-2 pl-6">
-                      <div className="font-medium">{m.full_name || <span className="text-faint">Unnamed</span>}</div>
+                      <div className="font-medium">{m.full_name || (isInbox(m.email) ? <span className="text-muted-foreground">Company inbox</span> : <span className="text-faint">Unnamed</span>)}</div>
                       {m.title ? <div className="text-xs text-muted-foreground">{m.title}</div> : null}
                     </td>
                     <td className="px-4 py-2">

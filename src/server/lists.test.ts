@@ -469,6 +469,58 @@ describe("people at the companies a signal finds", () => {
   });
 });
 
+describe("a company's inbox", () => {
+  it("is kept with no name, verified by being on the company's site, and never looked up", async () => {
+    const list = await newList({ email_daily_cap: 10 });
+    const search = await newSearch();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    await post(search.id, [{ company: "Bouw BV", email: " Info@Bouw.nl ", source_url: "https://bouw.nl/contact" }, ana]);
+    const inbox = row("SELECT * FROM leads WHERE email = 'info@bouw.nl'");
+    expect(inbox).toMatchObject({ full_name: "", domain: "bouw.nl", email_verified: 1, email_provider: "site", enrich_status: "done" });
+    // Only Ana is looked up; the inbox needs no lookup.
+    expect(jobsFor("/api/jobs/enrich-lead").map((j) => j.payload.leadId)).toEqual([row("SELECT id FROM leads WHERE full_name = 'Ana de Vries'").id]);
+  });
+
+  it("refuses a person's address: the waterfall finds those", async () => {
+    const search = await newSearch();
+    const r = await request("/api/leads", { method: "POST", body: { run_id: search.id, leads: [{ ...ana, email: "ana@bouw.nl" }] }, headers: AGENT });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("isn't a company's public address");
+    expect(row("SELECT COUNT(*) AS n FROM leads").n).toBe(0);
+  });
+
+  it("list members say which addresses are inboxes, and a reader can take one kind", async () => {
+    const list = await newList();
+    const search = await newSearch();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    await post(search.id, [{ company: "Bouw BV", domain: "bouw.nl", email: "kantoor@bouw.nl" }, ana, jan]);
+    // A named person whose found address is a shared one is an inbox too.
+    db.prepare("UPDATE leads SET email = 'info@smitbouw.nl', email_verified = 1 WHERE full_name = 'Jan Smit'").run();
+    db.prepare("UPDATE leads SET email = 'ana@bouw.nl', email_verified = 1 WHERE full_name = 'Ana de Vries'").run();
+    const kinds = Object.fromEntries((await ok(`/api/lists/${list.id}/members`)).members.map((m: any) => [m.email, m.email_kind]));
+    expect(kinds).toEqual({ "kantoor@bouw.nl": "inbox", "ana@bouw.nl": "person", "info@smitbouw.nl": "inbox" });
+    const people = await ok(`/api/lists/${list.id}/members?email_kind=person`);
+    expect([people.total, people.members.map((m: any) => m.email)]).toEqual([1, ["ana@bouw.nl"]]);
+    const inboxes = await ok(`/api/lists/${list.id}/members?email_kind=inbox&email_verified=true`);
+    expect(inboxes.members.map((m: any) => m.email).sort()).toEqual(["info@smitbouw.nl", "kantoor@bouw.nl"]);
+  });
+
+  it("joins a list once, however often a search finds it", async () => {
+    const list = await newList();
+    const search = await newSearch();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    const inbox = { company: "Bouw BV", domain: "bouw.nl", email: "info@bouw.nl" };
+    await post(search.id, [inbox]);
+    await post(search.id, [{ ...inbox, email: "INFO@bouw.nl" }, { company: "Bouw BV", domain: "bouw.nl", email: "kantoor@bouw.nl" }]);
+    const members = (await ok(`/api/lists/${list.id}/members`)).members.map((m: any) => m.email).sort();
+    expect(members).toEqual(["info@bouw.nl", "kantoor@bouw.nl"]);
+  });
+
+  it("the company search tells the agent to keep it", () => {
+    expect(companyBatches("https://prospector.example", [{ id: "r1", company_domain: "bouw.nl" }])[0].brief).toContain("That is the company's inbox. Never post a person's email.");
+  });
+});
+
 describe("refresh", () => {
   it("books the list's next refresh on the queue, one interval out", async () => {
     const before = Date.now();

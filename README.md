@@ -98,6 +98,13 @@ agent in one task, and their people join the list. Attaching a monitor to a list
 also searches the companies it already found, newest first, up to its per-check
 limit. Otherwise **Find people** on a company finding opens the search by hand.
 
+**A company's inbox.** When the company's own site shows a general address
+(info@, contact@, office@), the search keeps it too, as the company's inbox: no
+name, verified by being on the site, never looked up. List members carry
+`email_kind` (`person` or `inbox`), so a campaign written to named people can
+leave inboxes out, and one written to companies can take only them. An agent can
+post an email only for such an address; a person's comes from the waterfall.
+
 Local tests require Node 22.13+ (`node:sqlite`). `pnpm test`, `pnpm typecheck`,
 and `pnpm build` generate embedded procedures from
 `skills/linkedin-signals/SKILL.md` (the four LinkedIn templates) and
