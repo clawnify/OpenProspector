@@ -505,6 +505,17 @@ describe("a company's inbox", () => {
     expect(inboxes.members.map((m: any) => m.email).sort()).toEqual(["info@smitbouw.nl", "kantoor@bouw.nl"]);
   });
 
+  it("joins a list once, however often a search finds it", async () => {
+    const list = await newList();
+    const search = await newSearch();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    const inbox = { company: "Bouw BV", domain: "bouw.nl", email: "info@bouw.nl" };
+    await post(search.id, [inbox]);
+    await post(search.id, [{ ...inbox, email: "INFO@bouw.nl" }, { company: "Bouw BV", domain: "bouw.nl", email: "kantoor@bouw.nl" }]);
+    const members = (await ok(`/api/lists/${list.id}/members`)).members.map((m: any) => m.email).sort();
+    expect(members).toEqual(["info@bouw.nl", "kantoor@bouw.nl"]);
+  });
+
   it("the company search tells the agent to keep it", () => {
     expect(companyBatches("https://prospector.example", [{ id: "r1", company_domain: "bouw.nl" }])[0].brief).toContain("That is the company's inbox. Never post a person's email.");
   });
