@@ -332,7 +332,7 @@ That is a considered decision, not a missing feature. Cold-email sending at volu
 
 ```bash
 git clone https://github.com/clawnify/OpenProspector.git
-cd open-prospector
+cd OpenProspector
 pnpm install
 
 cp .dev.vars.example .dev.vars   # add whichever provider keys you have
