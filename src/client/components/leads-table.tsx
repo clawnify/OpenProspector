@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Activity, Building2, Check, ChevronDown, Clock, Download, Loader2, Mail, RedoDot, RefreshCw, Search, User } from "lucide-react";
 import { Badge, Button, Chip, Empty, Favicon, Popover, PopoverContent, PopoverTrigger, Tooltip } from "./ui";
 import type { Lead, OlderFind, Provider } from "../api";
+import { isInbox } from "../../shared/inbox";
 
 /**
  * `running` long past the window: whatever was enriching the lead stopped
@@ -270,7 +271,7 @@ export function LeadsTable({
                     </td>
                   ) : null}
                   <td className={`px-4 py-2 ${selected && onSelect ? "" : "pl-6"}`}>
-                    <div className="font-medium">{l.full_name || <span className="text-faint">—</span>}</div>
+                    <div className="font-medium">{l.full_name || (isInbox(l.email) ? <span className="text-muted-foreground">Company inbox</span> : <span className="text-faint">—</span>)}</div>
                     {l.title ? <div className="text-xs text-muted-foreground">{l.title}</div> : null}
                   </td>
                   <td className="px-4 py-2">

@@ -27,6 +27,7 @@ import { LeadSchema } from "./lead-schema.js";
 import { afterJoin, joinFromRun } from "./lists.js";
 import { listRoutes } from "./list-routes.js";
 import { monitorRoutes } from "./monitor-routes.js";
+import { isInbox } from "../shared/inbox.js";
 import type { EnrichField, EnrichResult, LedgerField } from "./providers/types.js";
 
 type Env = {
@@ -1062,6 +1063,9 @@ const importLeads = createRoute({
                   source: z.string().optional(),
                   source_url: z.string().optional(),
                   evidence: z.string().optional(),
+                  email: z.string().max(254).optional().openapi({
+                    description: "Only a company's public address, read on its own site (info@, contact@, office@): kept as the company's inbox, with no name. A person's email comes from the waterfall, never from here.",
+                  }),
                   // What the source says about the employer. Stored against the
                   // company's domain, never on the lead, and only into cells no
                   // vendor has filled — see saveListedCompanies.
@@ -1090,6 +1094,16 @@ app.openapi(importLeads, async (c) => {
   // A lead with neither a name nor a domain can't be enriched by any provider,
   // so reject it at the boundary instead of storing a row that will only ever
   // produce "ineligible" attempts.
+  // An email here is only ever a company's inbox, read on its own site; the
+  // waterfall finds a person's. An inbox without a domain takes its address's.
+  for (const l of body.leads) {
+    if (!l.email?.trim()) continue;
+    l.email = l.email.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(l.email) || !isInbox(l.email)) {
+      return c.json({ error: `${l.email} isn't a company's public address (info@, contact@, office@). Post people without an email: the waterfall finds theirs.` }, 400);
+    }
+    if (!(l.domain || "").trim()) l.domain = l.email.slice(l.email.lastIndexOf("@") + 1);
+  }
   const valid = body.leads
     .filter((l) => (l.full_name || "").trim() || (l.domain || "").trim())
     .map(movePrivateProfileUrl);
@@ -1126,6 +1140,14 @@ app.openapi(importLeads, async (c) => {
   }
 
   await saveListedCompanies(rows);
+  // A company's inbox needs no lookup: its address is on the company's own site.
+  for (const [i, l] of rows.entries()) {
+    if (!l.email) continue;
+    await run(
+      "UPDATE leads SET email = ?, email_verified = 1, email_provider = 'site', enrich_status = 'done', updated_at = datetime('now') WHERE id = ?",
+      [l.email, ids[i]],
+    );
+  }
 
   if (runId) {
     await run(
@@ -1143,6 +1165,8 @@ app.openapi(importLeads, async (c) => {
 type ImportedLead = {
   full_name?: string;
   domain?: string;
+  /** A company's inbox only (checked on import); a person's email is the waterfall's. */
+  email?: string;
   company?: string;
   linkedin_url?: string;
   source?: string;

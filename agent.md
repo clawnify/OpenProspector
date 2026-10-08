@@ -184,6 +184,16 @@ to look for and why the company matters.
 - Nobody named anywhere you can read is `done` with no leads, never a guess.
 - The people you post join the lists of every signal that found the company.
 
+### A company's inbox
+
+A company's public address (info@, contact@, office@) is not a person. When the
+company's own site shows one, post it as a lead with no `full_name`:
+`{ company, domain, email, source_url }`. The app keeps it as the company's
+inbox: verified by being on the site, never looked up, and marked
+`email_kind: "inbox"` on list members, so a campaign written to named people
+leaves it out. `email` is refused for anything but such an address: a person's
+email comes from the waterfall, never from you.
+
 ## Reading the attempt log
 
 | Outcome | Meaning |
