@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { SignalsRoute } from "../routes/signals";
-import { MonitorForm, Finding } from "./signal-monitors";
+import { ContactFields, MonitorForm, Finding } from "./signal-monitors";
 import { CustomObservationInput, findsContacts } from "../../shared/monitors";
 
 it("keeps templates out of the normal feed and provides an explicit creation entry point", () => {
@@ -84,11 +84,19 @@ it("asks a custom signal whether it finds companies or people; companies come wi
   expect(custom).toMatch(/aria-pressed="false"[^>]*>People</);
   expect(custom).toMatch(/type="checkbox" checked=""\/>.{0,20}Find who to contact at each company/);
   expect(custom).toContain("Who to contact (optional)");
-  // In words the agent reads: a relation works as well as a title.
-  expect(custom).toContain("the owner&#x27;s son who works there");
+  // In words the agent reads, not a title filter.
+  expect(custom).toContain("For example: the Creative Director, or the operations manager");
   const linkedin = renderToStaticMarkup(<MonitorForm kind="post" onClose={() => {}} onSaved={() => {}} />);
   expect(linkedin).not.toContain("What should it find?");
   expect(linkedin).not.toContain("Find who to contact");
+});
+
+it("asks who to contact only while it looks for them by itself", () => {
+  const fields = (contacts: boolean) => renderToStaticMarkup(<ContactFields contacts={contacts} onContacts={() => {}} who="the Creative Director" onWho={() => {}} />);
+  expect(fields(true)).toContain("Who to contact (optional)");
+  expect(fields(true)).toContain('value="the Creative Director"');
+  expect(fields(false)).not.toContain("Who to contact (optional)");
+  expect(fields(false)).toContain("press Find people on the ones you want");
 });
 
 it("looks for who to contact by itself only as set, and a signal saved before the choice while it feeds a list", () => {

@@ -96,17 +96,15 @@ stays fixed.
 one search, whichever monitors find it, for the person to contact there: the
 owner of a small business by default, or whoever you describe in **Who to
 contact**. Describe them in plain words, since the agent reads it: a role ("the
-Creative Director"), a situation ("someone new in the job") or a relation ("the
-owner's son who works there", found by the owner's surname on the team page or
-in the company registry). The agent adds nobody rather than guess. With **Find
-who to contact at each company** on, the default, each check hands its new
-companies to the agent in one task, and their people join the lists the monitor
-feeds. Attaching such a monitor to a list also searches the companies it already
-found, newest first, up to its per-check limit. Off, its companies wait: **Find
-people** on a company finding opens that search by hand, and the people found
-still join the monitor's lists. A custom monitor made before this choice finds
-either kind, and searches companies only while it feeds a list, until you set
-the switch in its settings.
+Creative Director") or a situation ("someone new in the job"). The agent adds
+nobody rather than guess. With **Find who to contact at each company** on, the
+default, each check hands its new companies to the agent in one task, and their
+people join the lists the monitor feeds. Attaching such a monitor to a list also
+searches the companies it already found, newest first, up to its per-check
+limit. Off, its companies wait: **Find people** on a company finding opens that
+search by hand, and the people found still join the monitor's lists. A custom
+monitor made before this choice finds either kind, and searches companies only
+while it feeds a list, until you set the switch in its settings.
 
 **A company's inbox.** When the company's own site shows a general address
 (info@, contact@, office@), the search keeps it too, as the company's inbox: no
