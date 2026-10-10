@@ -1,7 +1,7 @@
 ---
 name: custom-signals
 description: Run a saved custom prospecting prompt and record evidence-backed Person or Company signals. Not for the four LinkedIn templates.
-version: 2
+version: 3
 ---
 
 # Custom signal research
@@ -25,7 +25,8 @@ create another task/schedule. Do not install this skill on the agent.
    report actual coverage, not exhaustive coverage. Stop and report login,
    CAPTCHA, rate-limit or access blocks; never bypass them or ask for passwords.
 3. Every finding must concern an identifiable Person or Company, explain why it
-   matches the prompt, and cite evidence you actually read. An article is the
+   matches the prompt, and cite evidence you actually read. When the monitor's
+   finds is set, record only that kind (companies or people). An article is the
    evidence, not the subject: for coverage of a company, identify that company.
    Verify the person's profile or company's domain and the connection to the
    evidence. Never invent identities, relationships, dates, quotes or intent.

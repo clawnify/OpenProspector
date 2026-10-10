@@ -237,9 +237,10 @@ export const api = {
   runFromSignal: (id: string) => req<{ run: Run; signal: Signal }>(`/api/signals/${id}/run`, { method: "POST" }),
 
   runs: (page = 1, opts: { searchesOnly?: boolean; limit?: number } = {}) =>
-    req<{ runs: Run[]; total: number; page: number; limit: number }>(
+    req<{ runs: Run[]; total: number; page: number; limit: number; others_live: number }>(
       `/api/runs?page=${page}${opts.searchesOnly ? "&searches=true" : ""}${opts.limit ? `&limit=${opts.limit}` : ""}`,
     ),
+  run: (id: string) => req<{ run: Run }>(`/api/runs/${encodeURIComponent(id)}`),
 
   lists: (page = 1, limit = 25) => req<{ lists: ProspectList[]; total: number; page: number; limit: number }>(`/api/lists?page=${page}&limit=${limit}`),
   list: (id: string) =>
@@ -251,7 +252,7 @@ export const api = {
     req<{ list: ProspectList }>(`/api/lists/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteList: (id: string) => req<{ ok: boolean }>(`/api/lists/${id}`, { method: "DELETE" }),
   addListSource: (id: string, kind: "search" | "signal", source_id: string) =>
-    req<{ added: number; searching: number }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
+    req<{ added: number; searching: number; contacts: boolean }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
   removeListSource: (id: string, kind: "search" | "signal", source_id: string) =>
     req<{ ok: boolean }>(`/api/lists/${id}/sources/${kind}/${encodeURIComponent(source_id)}`, { method: "DELETE" }),
   addToList: (id: string, lead_ids: string[]) =>

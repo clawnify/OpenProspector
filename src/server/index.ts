@@ -492,7 +492,16 @@ const listRuns = createRoute({
       description: "Paginated runs",
       content: {
         "application/json": {
-          schema: z.object({ runs: z.array(RunSchema), total: z.number().int(), page: z.number().int(), limit: z.number().int() }),
+          schema: z.object({
+            runs: z.array(RunSchema),
+            total: z.number().int(),
+            page: z.number().int(),
+            limit: z.number().int(),
+            others_live: z.number().int().openapi({
+              description:
+                "With searches=true: how many of the runs it leaves out (a list's re-runs, the searches opened for a company a signal found) are working now, so a page that lists searches only keeps refreshing while their leads arrive. 0 otherwise.",
+            }),
+          }),
         },
       },
     },
@@ -515,7 +524,15 @@ app.openapi(listRuns, async (c) => {
     `SELECT ${RUN_SELECT} FROM runs${where} ORDER BY created_at DESC, id LIMIT ? OFFSET ?`,
     [STALE_AFTER, ...params, limit, offset],
   );
-  return c.json({ runs, total: countRow?.total || 0, page, limit }, 200);
+  // Live as RUN_SELECT reads it: working, and heard from within STALE_AFTER.
+  const others = q.searches === "true"
+    ? await get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM runs WHERE (refresh_of IS NOT NULL OR company_domain IS NOT NULL)
+           AND status IN ('sourcing', 'enriching') AND updated_at >= datetime('now', ?)`,
+        [STALE_AFTER],
+      )
+    : null;
+  return c.json({ runs, total: countRow?.total || 0, page, limit, others_live: others?.n ?? 0 }, 200);
 });
 
 const getRun = createRoute({

@@ -69,6 +69,8 @@ unreported task looks identical to a dead one.
   review engagement evidence before explicitly adding someone to People.
 
 - `/` — the whole app: ICP box, both waterfall panels, and the leads table.
+  **Searches** there lists only the searches someone started (`GET /api/runs?searches=true`);
+  a signal's company searches show on `/signals`, under each company.
   **Screenshot-friendly**: the leads table with resolved emails and provider
   attribution is the money shot.
 
@@ -174,13 +176,19 @@ many emails it may look up a day.
 
 ### Company searches
 
-A custom signal can find companies rather than people. The app then opens one
-search per company (the run carries `company_domain`) and hands you a batch of
-them in one task: find the person to contact at each. Its `icp_prompt` says who
-to look for and why the company matters.
+A custom signal finds companies or people (`finds` on the monitor; one saved
+before that choice can find either). For the companies it finds, the app opens
+one search per company (the run carries `company_domain`) when the signal is set
+to find who to contact (`find_contacts`), or when the user presses Find people,
+and hands you a batch of them in one task: find the person to contact at each.
+Its `icp_prompt` says who to look for and why the company matters.
 
 - Read the company's own website first (about, team, contact, imprint), then
   the company registry. Small-business owners rarely have a LinkedIn profile.
+- Look for whoever the prompt describes, as written: a role, a situation, or a
+  relation such as the owner's son or daughter who works there (the owner's
+  surname on the team page or in the registry). Say in `evidence` why each
+  person matches.
 - Nobody named anywhere you can read is `done` with no leads, never a guess.
 - The people you post join the lists of every signal that found the company.
 

@@ -231,14 +231,18 @@ function sourceLine(s: ListSource): { text: string; tone: "neutral" | "warning" 
 }
 
 /** Searches and signals to add, in one combobox with a group each. */
-/** What attaching a source did: people who joined, and companies it found whose people are being looked for. */
-function addedMessage(added: number, searching: number): string {
+/**
+ * What attaching a source did: people who joined, and companies it found whose
+ * people are being looked for, or, on a signal set not to look, are waiting.
+ */
+function addedMessage(added: number, searching: number, contacts: boolean): string {
   const people = added ? ` ${added} ${added === 1 ? "person" : "people"} it already found joined.` : "";
   const companies = searching ? ` Finding who to contact at ${searching} ${searching === 1 ? "company" : "companies"} it found.` : "";
-  return `Added.${people}${companies}`;
+  const waiting = contacts ? "" : " Its companies wait on Signals: press Find people on the ones you want, and their people join this list.";
+  return `Added.${people}${companies}${waiting}`;
 }
 
-function AddSource({ listId, existing, onAdded }: { listId: string; existing: ListSource[]; onAdded: (added: number, searching: number) => void }) {
+function AddSource({ listId, existing, onAdded }: { listId: string; existing: ListSource[]; onAdded: (added: number, searching: number, contacts: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [monitors, setMonitors] = useState<Monitor[] | null>(null);
@@ -261,7 +265,7 @@ function AddSource({ listId, existing, onAdded }: { listId: string; existing: Li
     setOpen(false);
     try {
       const r = await api.addListSource(listId, kind, id);
-      onAdded(r.added, r.searching);
+      onAdded(r.added, r.searching, r.contacts);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -474,7 +478,7 @@ export function ListDetail() {
         <div className="grid items-start gap-6 lg:grid-cols-2">
           <Card>
             <Zone>
-              <CardTitle right={<AddSource listId={id} existing={sources} onAdded={(n, searching) => void act(async () => undefined, addedMessage(n, searching))} />}>
+              <CardTitle right={<AddSource listId={id} existing={sources} onAdded={(n, searching, contacts) => void act(async () => undefined, addedMessage(n, searching, contacts))} />}>
                 Sources
               </CardTitle>
             </Zone>
