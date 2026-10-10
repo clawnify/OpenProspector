@@ -82,9 +82,20 @@ function ContactsField({ checked, onChange }: { checked: boolean; onChange: (che
 /** Signals that find companies: who a company search looks for there, in words the agent reads. */
 function WhoField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return <label className="block text-sm">Who to contact (optional)
-    <input className="input mt-1 w-full" value={value} maxLength={300} placeholder="For example: the Creative Director, or the owner's son who works there" onChange={e => onChange(e.target.value)} />
-    <span className="mt-1 block text-xs text-muted-foreground">In plain words: a role, a situation such as new in the job, or a relation. Your agent reads the company's site and registry, and adds nobody rather than guess. Left empty: the owner, or at a larger company up to 3 people who decide.</span>
+    <input className="input mt-1 w-full" value={value} maxLength={300} placeholder="For example: the Creative Director, or the operations manager" onChange={e => onChange(e.target.value)} />
+    <span className="mt-1 block text-xs text-muted-foreground">In plain words: a role, or a situation such as new in the job. Your agent reads the company's site and registry, and adds nobody rather than guess. Left empty: the owner, or at a larger company up to 3 people who decide.</span>
   </label>;
+}
+
+/**
+ * A company signal's contact settings: the switch, and who to look for while it
+ * is on. Off hides the field but keeps what it says, which Find people still uses.
+ */
+export function ContactFields({ contacts, onContacts, who, onWho }: { contacts: boolean; onContacts: (on: boolean) => void; who: string; onWho: (who: string) => void }) {
+  return <>
+    <ContactsField checked={contacts} onChange={onContacts} />
+    {contacts && <WhoField value={who} onChange={onWho} />}
+  </>;
 }
 
 /** An ISO time as a datetime-local value, in the viewer's time zone. */
@@ -166,10 +177,7 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
         {kind !== "custom" && <label className="block text-sm">Who should we look for?
           <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} placeholder="For example: founders of small marketing agencies serving B2B companies" maxLength={1000} onChange={e => setIcp(e.target.value)} required />
         </label>}
-        {kind === "custom" && finds === "companies" && <>
-          <ContactsField checked={contacts} onChange={setContacts} />
-          <WhoField value={who} onChange={setWho} />
-        </>}
+        {kind === "custom" && finds === "companies" && <ContactFields contacts={contacts} onContacts={setContacts} who={who} onWho={setWho} />}
         <div className="grid gap-4 md:grid-cols-2">
           <AgentField value={serverId} onChange={setServerId} list={agentList} />
           <div className="block text-sm">Check frequency
@@ -232,10 +240,7 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
       <label className="block text-sm">{m.finds ? FINDS[m.finds].label : "Prompt"}
         <textarea className="input mt-1 min-h-32 w-full py-2" rows={5} value={source} maxLength={2500} onChange={e => setSource(e.target.value)} required />
       </label>
-      {companies && <>
-        <ContactsField checked={contacts} onChange={setContacts} />
-        <WhoField value={who} onChange={setWho} />
-      </>}
+      {companies && <ContactFields contacts={contacts} onContacts={setContacts} who={who} onWho={setWho} />}
     </> : <>
       <label className="block text-sm">Who should we look for?
         <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} maxLength={1000} onChange={e => setIcp(e.target.value)} required />
