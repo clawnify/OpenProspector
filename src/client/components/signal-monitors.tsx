@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Link } from "react-router-dom";
 import { Pencil, Plus, RefreshCw, Users } from "lucide-react";
 import { api, type AgentServer } from "../api";
-import { MONITOR_TEMPLATES, CUSTOM_MONITOR, MonitorEdit, MonitorInput, type CompanySearch, type Monitor, type MonitorConfig, type MonitorEditInput, type MonitorKind, type Observation } from "../../shared/monitors";
+import { MONITOR_TEMPLATES, CUSTOM_MONITOR, MonitorEdit, MonitorInput, findsContacts, type CompanySearch, type Monitor, type MonitorConfig, type MonitorEditInput, type MonitorKind, type Observation } from "../../shared/monitors";
 import { Badge, Button, Card, Chip, Dialog, Empty, Picker } from "./ui";
 
 const FREQUENCIES = { once: "On demand", daily: "Daily", weekly: "Weekly" };
@@ -42,20 +42,48 @@ function AgentField({ value, onChange, list }: { value: string; onChange: (id: s
   </div>;
 }
 
-function MaxField({ kind, value, onChange }: { kind: MonitorKind; value: string; onChange: (value: string) => void }) {
+function MaxField({ kind, finds, value, onChange }: { kind: MonitorKind; finds?: MonitorConfig["finds"]; value: string; onChange: (value: string) => void }) {
+  const what = kind !== "custom" || finds === "people" ? "new people" : finds === "companies" ? "new companies" : "new findings";
   return <label className="block text-sm">At most
     <span className="mt-1 flex items-center gap-2">
       <input type="number" inputMode="numeric" min={1} max={100} className="input w-20 data" value={value} onChange={e => onChange(e.target.value)} required />
-      <span className="text-muted-foreground">{kind === "custom" ? "new findings" : "new people"} per check</span>
+      <span className="text-muted-foreground">{what} per check</span>
     </span>
   </label>;
 }
 
-/** Custom signals only: who a company search looks for at a company the signal finds. */
+/** What a custom signal records. One kind, so its options and its findings match. */
+const FINDS = {
+  companies: { label: "Which companies should it find?", placeholder: "For example: field service companies with their own vans that work in Amsterdam, and why they would need us." },
+  people: { label: "Which people should it find?", placeholder: "For example: creative directors at Amsterdam agencies who started the job in the last 90 days." },
+} as const;
+type Finds = keyof typeof FINDS;
+
+function FindsField({ value, onChange }: { value: Finds; onChange: (value: Finds) => void }) {
+  return <div className="text-sm">What should it find?
+    <div role="group" aria-label="What should it find?" className="mt-1 flex w-fit rounded-sm bg-muted p-0.5">
+      {([["companies", "Companies"], ["people", "People"]] as const).map(([v, label]) =>
+        <button key={v} type="button" aria-pressed={value === v} onClick={() => onChange(v)}
+          className={`h-7 whitespace-nowrap rounded-[3px] px-2.5 text-xs font-medium ${value === v ? "bg-background text-foreground shadow-raised" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>)}
+    </div>
+  </div>;
+}
+
+/** Signals that find companies: whether each new company gets a search for who to contact there. */
+function ContactsField({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return <label className="flex items-start gap-2 text-sm">
+    <input className="mt-1 accent-primary" type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+    <span>Find who to contact at each company
+      <span className="mt-0.5 block text-xs text-muted-foreground">{checked ? "Each new company it finds gets a search for its people." : "Its companies wait on Signals: press Find people on the ones you want."}</span>
+    </span>
+  </label>;
+}
+
+/** Signals that find companies: who a company search looks for there, in words the agent reads. */
 function WhoField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <label className="block text-sm">Who to contact at the companies it finds (optional)
-    <input className="input mt-1 w-full" value={value} maxLength={300} placeholder="For example: the owner. At larger firms, the operations manager." onChange={e => onChange(e.target.value)} />
-    <span className="mt-1 block text-xs text-muted-foreground">When it finds a company, a search finds this person there. Left empty: the owner, or at a larger company the people who would decide.</span>
+  return <label className="block text-sm">Who to contact (optional)
+    <input className="input mt-1 w-full" value={value} maxLength={300} placeholder="For example: the Creative Director, or the owner's son who works there" onChange={e => onChange(e.target.value)} />
+    <span className="mt-1 block text-xs text-muted-foreground">In plain words: a role, a situation such as new in the job, or a relation. Your agent reads the company's site and registry, and adds nobody rather than guess. Left empty: the owner, or at a larger company up to 3 people who decide.</span>
   </label>;
 }
 
@@ -86,6 +114,8 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
   const [ends, setEnds] = useState("");
   const [max, setMax] = useState(String(DEFAULT_MAX));
   const [who, setWho] = useState("");
+  const [finds, setFinds] = useState<Finds>("companies");
+  const [contacts, setContacts] = useState(true);
   const agentList = useSignalAgents();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -99,7 +129,9 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
     setError(null);
     if (!request.current) {
       if (ends && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
-      const parsed = MonitorInput.safeParse({ name, kind, source, icp, server_id: serverId, frequency, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max), who_to_contact: who });
+      const companies = kind === "custom" && finds === "companies";
+      const parsed = MonitorInput.safeParse({ name, kind, source, icp, server_id: serverId, frequency, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max), who_to_contact: companies ? who : "",
+        ...(kind === "custom" ? { finds, ...(companies ? { find_contacts: contacts } : {}) } : {}) });
       if (!parsed.success) { setError(parsed.error.issues.map(i => i.message).join(" ")); return; }
       request.current = { id: crypto.randomUUID(), checkId: crypto.randomUUID(), config: parsed.data };
       setSubmitted(true);
@@ -127,13 +159,17 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
       </div>
       <fieldset disabled={busy || submitted} className="space-y-4 disabled:opacity-60">
         <label className="block text-sm">Name<input className="input mt-1 w-full" value={name} maxLength={100} onChange={e => setName(e.target.value)} required /></label>
-        <label className="block text-sm">{template.label}
-          <textarea autoFocus className={`input mt-1 w-full py-2 ${kind === "custom" ? "min-h-32" : "min-h-20"}`} rows={kind === "custom" ? 5 : kind === "team" ? 3 : 2} value={source} placeholder={template.placeholder} maxLength={kind === "query" ? 500 : 2500} onChange={e => setSource(e.target.value)} required />
+        {kind === "custom" && <FindsField value={finds} onChange={setFinds} />}
+        <label className="block text-sm">{kind === "custom" ? FINDS[finds].label : template.label}
+          <textarea autoFocus className={`input mt-1 w-full py-2 ${kind === "custom" ? "min-h-32" : "min-h-20"}`} rows={kind === "custom" ? 5 : kind === "team" ? 3 : 2} value={source} placeholder={kind === "custom" ? FINDS[finds].placeholder : template.placeholder} maxLength={kind === "query" ? 500 : 2500} onChange={e => setSource(e.target.value)} required />
         </label>
         {kind !== "custom" && <label className="block text-sm">Who should we look for?
           <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} placeholder="For example: founders of small marketing agencies serving B2B companies" maxLength={1000} onChange={e => setIcp(e.target.value)} required />
         </label>}
-        {kind === "custom" && <WhoField value={who} onChange={setWho} />}
+        {kind === "custom" && finds === "companies" && <>
+          <ContactsField checked={contacts} onChange={setContacts} />
+          <WhoField value={who} onChange={setWho} />
+        </>}
         <div className="grid gap-4 md:grid-cols-2">
           <AgentField value={serverId} onChange={setServerId} list={agentList} />
           <div className="block text-sm">Check frequency
@@ -143,7 +179,7 @@ export function MonitorForm({ kind, onClose, onSaved }: { kind: MonitorKind; onC
         {frequency !== "once" && <label className="block text-sm">Stop after (optional, your local time)
           <input type="datetime-local" className="input mt-1 w-full" value={ends} onChange={e => setEnds(e.target.value)} />
         </label>}
-        <MaxField kind={kind} value={max} onChange={setMax} />
+        <MaxField kind={kind} finds={kind === "custom" ? finds : undefined} value={max} onChange={setMax} />
         <label className="flex items-start gap-2 text-sm"><input className="mt-1 accent-primary" type="checkbox" checked={includeExisting} onChange={e => setIncludeExisting(e.target.checked)} />{kind === "custom" ? "Include existing findings on the first check" : "Include existing engagement on the first check"}</label>
         {!includeExisting && <p className="text-sm text-muted-foreground">{kind === "custom" ? "The first successful check establishes a baseline. Later checks show newly observed findings, not necessarily newly published events." : "The first successful check establishes a baseline. Later checks show newly observed engagement, not necessarily newly posted engagement."}</p>}
       </fieldset>
@@ -170,6 +206,9 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   const [ends, setEnds] = useState(localInput(m.ends_at));
   const [max, setMax] = useState(String(m.max_per_check));
   const [who, setWho] = useState(m.who_to_contact);
+  // What it finds stays fixed; a signal saved before the choice may find companies.
+  const companies = custom && m.finds !== "people";
+  const [contacts, setContacts] = useState(findsContacts(m));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<{ id: string; body: string } | null>(null);
@@ -178,7 +217,7 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
     setError(null);
     if (ends && frequency !== "once" && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
     const parsed = MonitorEdit.safeParse({ name, icp, server_id: serverId, frequency, max_per_check: Number(max), who_to_contact: who,
-      ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, ...(custom ? { source } : {}) });
+      ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, ...(custom ? { source } : {}), ...(companies ? { find_contacts: contacts } : {}) });
     if (!parsed.success) { setError(parsed.error.issues.map(i => i.message).join(" ")); return; }
     const body = JSON.stringify(parsed.data);
     if (attempt.current?.body !== body) attempt.current = { id: crypto.randomUUID(), body };
@@ -190,10 +229,13 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   return <Dialog open={open} onOpenChange={onOpenChange} title="Edit signal" submitLabel={busy ? "Saving…" : "Save"} submitting={busy} onSubmit={() => void submit()}>
     <label className="block text-sm">Name<input className="input mt-1 w-full" value={name} maxLength={100} onChange={e => setName(e.target.value)} required /></label>
     {custom ? <>
-      <label className="block text-sm">Prompt
+      <label className="block text-sm">{m.finds ? FINDS[m.finds].label : "Prompt"}
         <textarea className="input mt-1 min-h-32 w-full py-2" rows={5} value={source} maxLength={2500} onChange={e => setSource(e.target.value)} required />
       </label>
-      <WhoField value={who} onChange={setWho} />
+      {companies && <>
+        <ContactsField checked={contacts} onChange={setContacts} />
+        <WhoField value={who} onChange={setWho} />
+      </>}
     </> : <>
       <label className="block text-sm">Who should we look for?
         <textarea className="input mt-1 min-h-20 w-full py-2" rows={3} value={icp} maxLength={1000} onChange={e => setIcp(e.target.value)} required />
@@ -208,7 +250,7 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
     {frequency !== "once" && <label className="block text-sm">Stop after (optional, your local time)
       <input type="datetime-local" className="input mt-1 w-full" value={ends} onChange={e => setEnds(e.target.value)} />
     </label>}
-    <MaxField kind={m.kind} value={max} onChange={setMax} />
+    <MaxField kind={m.kind} finds={m.finds} value={max} onChange={setMax} />
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </Dialog>;
 }
@@ -225,9 +267,9 @@ function SavedMonitor({ monitor: m, onChanged }: { monitor: Monitor; onChanged: 
     try { await fn(); } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); onChanged(); }
   }
-  const { id, active, schedule_id, schedule_error, created_at, last_check, ...cfg } = m;
+  const { id, active, schedule_id, schedule_error, created_at, last_check, lists_fed, ...cfg } = m;
   return <article className="border-b border-border py-4 last:border-b-0">
-    <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-medium">{m.name}</h3><Chip>{FREQUENCIES[m.frequency]}</Chip><Chip>Up to {m.max_per_check} a check</Chip><Badge tone={running ? "warning" : "neutral"}>{expired ? "Ended" : !m.active ? "Paused" : running ? "Checking" : "Ready"}</Badge></div>
+    <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-medium">{m.name}</h3><Chip>{FREQUENCIES[m.frequency]}</Chip><Chip>Up to {m.max_per_check} a check</Chip>{m.finds && <Chip>Finds {m.finds}</Chip>}{findsContacts(m) && <Chip>Finds who to contact</Chip>}<Badge tone={running ? "warning" : "neutral"}>{expired ? "Ended" : !m.active ? "Paused" : running ? "Checking" : "Ready"}</Badge></div>
     <p className="mt-1 break-words text-xs text-muted-foreground">{m.source}</p>
     {m.icp && <p className="mt-1 text-sm text-muted-foreground">{m.icp}</p>}
     {m.last_check && <p className="mt-2 text-xs text-muted-foreground">Last check: {m.last_check.status} · {m.last_check.updated_at} UTC</p>}

@@ -33,9 +33,24 @@ export const MonitorInput = z.object({
   max_per_check: z.number().int().min(1).max(100).default(25),
   /** Who to look for at a company it finds, when the search opened for it runs. */
   who_to_contact: z.string().trim().max(300).default(""),
+  /**
+   * Custom signals: what each finding is. A LinkedIn signal finds people. Absent
+   * on a custom signal saved before the choice existed, which records either.
+   */
+  finds: z.enum(["companies", "people"]).optional(),
+  /**
+   * Custom signals that find companies: open a search for who to contact at
+   * each new company it finds. Absent on one saved before the choice existed,
+   * which searches only while it feeds a list.
+   */
+  find_contacts: z.boolean().optional(),
 }).strict().superRefine((v, ctx) => {
   if (v.kind !== "custom" && v.icp.length < 3)
     ctx.addIssue({ code: "custom", path: ["icp"], message: "Describe who we should look for." });
+  if (v.kind !== "custom" && (v.finds !== undefined || v.find_contacts !== undefined))
+    ctx.addIssue({ code: "custom", path: ["finds"], message: "Only a custom signal chooses what it finds: a LinkedIn signal finds people." });
+  if (v.finds === "people" && v.find_contacts !== undefined)
+    ctx.addIssue({ code: "custom", path: ["find_contacts"], message: "A signal that finds people has nobody else to look for." });
   const sources = v.source.split(/\s+/);
   if (v.kind === "post" && !linkedinUrl(v.source, "post"))
     ctx.addIssue({ code: "custom", path: ["source"], message: "Enter an HTTPS LinkedIn post URL or lnkd.in short link." });
@@ -50,16 +65,26 @@ export type MonitorConfig = z.infer<typeof MonitorInput>;
  * What an existing monitor lets you change. What it watches (`source` on the
  * LinkedIn templates) stays fixed, because its findings and its first-check
  * baseline belong to that profile, post or query. A custom monitor's source is
- * its research prompt, so it can change.
+ * its research prompt, so it can change. What a custom monitor finds stays
+ * fixed too, so its findings stay one kind; whether it looks for who to
+ * contact at the companies can change.
  */
 export const MonitorEdit = MonitorInput.innerType()
-  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true, who_to_contact: true })
+  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true, who_to_contact: true, find_contacts: true })
   .extend({ source: MonitorInput.innerType().shape.source.optional() }).strict();
 export type MonitorEditInput = z.infer<typeof MonitorEdit>;
 export interface Monitor extends MonitorConfig {
   id: string; active: boolean; schedule_id: string | null;
   schedule_error: string | null; created_at: string;
   last_check: { id: string; status: string; error: string; updated_at: string; coverage: string } | null;
+  /** How many lists it feeds. */
+  lists_fed: number;
+}
+/** Whether it looks for who to contact at each new company it finds, by itself. */
+export function findsContacts(m: Pick<Monitor, "kind" | "finds" | "find_contacts" | "lists_fed">): boolean {
+  if (m.kind !== "custom" || m.finds === "people") return false;
+  // Saved before the choice existed: while it feeds a list.
+  return m.find_contacts ?? m.lists_fed > 0;
 }
 
 export const ObservationInput = z.object({

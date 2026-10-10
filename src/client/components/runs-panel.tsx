@@ -1,10 +1,41 @@
 // Sourcing runs. Without this the app fires a task at the agent and then shows
 // nothing for minutes — the agent works in an isolated session with
 // deliver:false, so the app is the only place progress can surface.
+//
+// Only the searches someone started. The runs that start by themselves show
+// where they come from: a signal's search for the people at a company it
+// found, on Signals under that company; a list's re-runs, on the list.
 
 import { AlertTriangle, Check, Compass, Loader2, Search, X } from "lucide-react";
-import { Badge, Card, CardTitle, Chip, Empty, Zone } from "./ui";
+import { Badge, Button, Card, CardTitle, Chip, Empty, Zone } from "./ui";
 import type { Run } from "../api";
+
+/** What the table is filtered to, in words. `null` while the run is still loading. */
+export function runFilterLabel(run: Run | null): string {
+  if (!run) return "Leads from one search";
+  if (run.company_domain) return `People found at ${run.company_domain}`;
+  if (run.source === "sales_navigator") return "Leads from a Sales Navigator export";
+  return `Leads from “${run.icp_prompt}”`;
+}
+
+/**
+ * The run filter, as a pill in the table's filter bar. The run may not be a
+ * row in Searches (a company search, opened from Signals), so a row's own
+ * toggle can't be the only way back to every lead.
+ */
+export function RunFilter({ run, onClear }: { run: Run | null; onClear: () => void }) {
+  const label = runFilterLabel(run);
+  return (
+    <span className="inline-flex h-7 min-w-0 max-w-xs items-center rounded-sm bg-card pl-2.5 text-sm font-medium shadow-raised">
+      <span className="truncate" title={label}>
+        {label}
+      </span>
+      <Button variant="ghost" size="icon" onClick={onClear} title="Show all leads" aria-label="Show all leads">
+        <X size={14} />
+      </Button>
+    </span>
+  );
+}
 
 function StatusBadge({ run }: { run: Run }) {
   // Stale is checked before status: a run still claiming "sourcing" that has
@@ -108,9 +139,6 @@ export function RunsPanel({
                   alternative is a red badge with no way to learn why. */}
               {r.error ? <span className="block truncate text-xs text-destructive">{r.error}</span> : null}
             </span>
-            {/* A list's refresh repeats a search with the same description; the
-                chip is what tells the copy from the original. */}
-            {r.refresh_of ? <Chip>List refresh</Chip> : null}
             <Chip>
               <span className="data">{r.lead_count}</span> leads
             </Chip>

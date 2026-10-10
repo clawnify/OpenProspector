@@ -27,7 +27,10 @@ function config(row: MonitorRow): MonitorConfig { return MonitorInput.parse(JSON
 async function present(row: MonitorRow): Promise<Monitor> {
   const last_check = await get<Check>("SELECT * FROM signal_checks WHERE monitor_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", [row.id]);
   const { config: _, create_request: __, ...rest } = row;
-  return { ...rest, ...config(row), active: Boolean(row.active), last_check: last_check ?? null };
+  // A custom signal saved before it could choose looks for who to contact
+  // while it feeds a list: the form reads this to show what it does now.
+  const lists_fed = (await listsFedBy("signal", row.id)).length;
+  return { ...rest, ...config(row), active: Boolean(row.active), last_check: last_check ?? null, lists_fed };
 }
 async function readCheck(id: string) {
   const check = await get<Check>("SELECT * FROM signal_checks WHERE id = ?", [UUID.parse(id)]);
@@ -248,6 +251,7 @@ const MonitorSchema = MonitorInput.innerType().extend({
   id: z.string(), active: z.boolean(), schedule_id: z.string().nullable(),
   schedule_error: z.string().nullable(), created_at: z.string(),
   last_check: CheckSchema.pick({ id: true, status: true, error: true, updated_at: true, coverage: true }).nullable(),
+  lists_fed: z.number().describe("How many lists this signal feeds"),
 });
 function result<T extends z.ZodTypeAny>(schema: T) {
   return { description: "Result", content: { "application/json": { schema } } };
@@ -290,18 +294,26 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
     await checkAllowed(monitor, c.env);
     if (check.status !== "sourcing") throw new InputError("Check is not running", 409);
     const observations = c.req.valid("json").observations;
-    if (config(monitor).kind !== "custom" && observations.some(v => "kind" in v))
+    const cfg = config(monitor);
+    if (cfg.kind !== "custom" && observations.some(v => "kind" in v))
       throw new InputError("LinkedIn templates require LinkedIn engagement observations.");
+    // A signal that says what it finds records only that kind.
+    if (cfg.finds === "companies" && observations.some(isPerson))
+      throw new InputError('This signal finds companies: record each finding with subject.type "company".');
+    if (cfg.finds === "people" && observations.some(v => !isPerson(v)))
+      throw new InputError('This signal finds people: record each finding with subject.type "person".');
     // Accept the old LinkedIn shape on custom monitors: already-running tasks
     // and native schedules may still carry the previously attached snapshot.
     let recorded = 0;
-    // A signal that feeds a list adds its new people to it as they are found,
-    // and opens a search for the person to contact at each new company:
-    // attaching it to the list was the review. Baseline findings stay hidden.
+    // A signal that feeds a list adds its new people to it as they are found:
+    // attaching it to the list was the review. At each new company it opens a
+    // search for who to contact when it is set to, or, saved before it could
+    // be, while it feeds a list. Baseline findings stay hidden.
     const feeds = !check.baseline && (await listsFedBy("signal", check.monitor_id)).length > 0;
+    const contacts = !check.baseline && (cfg.find_contacts ?? feeds);
     const grew = new Set<string>();
     const companies: Company[] = [];
-    const cap = config(monitor).max_per_check;
+    const cap = cfg.max_per_check;
     for (const observation of observations) {
       const fingerprint = await observationFingerprint(observation);
       const inserted = await get<{ id: string }>(
@@ -319,14 +331,14 @@ monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{
         if (feeds && isPerson(observation)) {
           const leadId = await promoteObservation(inserted.id, JSON.stringify(observation));
           for (const listId of await joinFromSignal(check.monitor_id, leadId)) grew.add(listId);
-        } else if (feeds) {
+        } else if (contacts) {
           const company = companyOf(JSON.stringify(observation));
           if (company) companies.push(company);
         }
       }
     }
     if (companies.length) {
-      const { name, who_to_contact } = config(monitor);
+      const { name, who_to_contact } = cfg;
       for (const listId of await searchCompanies(c.env, new URL(c.req.url).origin, { id: monitor.id, name, who_to_contact }, companies)) grew.add(listId);
     }
     await afterJoin(c.env, new URL(c.req.url).origin, [...grew]);

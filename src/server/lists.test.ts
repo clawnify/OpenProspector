@@ -43,6 +43,7 @@ vi.mock("@clawnify/queue", () => ({
 
 import app from "./index";
 import { companyBatches } from "./agent";
+import { findsContacts } from "../shared/monitors";
 
 const DB = { prepare: () => { throw new Error("queries must go through the mocked ./db.js"); } };
 const env = { CLAWNIFY_TOKEN: "test-only-token", DB };
@@ -411,6 +412,84 @@ describe("people at the companies a signal finds", () => {
     expect(refused.body.error).toContain("Add that signal instead");
     expect((await ok("/api/runs?searches=true")).runs.map((r: any) => r.id)).toEqual([plain.id]);
     expect((await ok("/api/runs")).total).toBe(2);
+  });
+
+  it("Leads lists only the searches someone started, and counts the left-out ones still working, so it keeps refreshing", async () => {
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    await record((await beginCheck(monitor)).id, [bouwFinding, smitFinding]);
+    const plain = await newSearch();
+    const listed = await ok("/api/runs?searches=true");
+    expect(listed.runs.map((r: any) => r.id)).toEqual([plain.id]);
+    expect(listed.others_live).toBe(2);
+    // Without the filter nothing is left out, so nothing is counted apart.
+    expect((await ok("/api/runs")).others_live).toBe(0);
+    // Done, or quiet past the stall window: nothing left to wait for.
+    await ok(`/api/runs/${searchOf("bouw.nl").id}`, { method: "PATCH", body: { status: "done" }, headers: AGENT });
+    db.prepare("UPDATE runs SET updated_at = datetime('now', '-20 minutes') WHERE company_domain = 'smitbouw.nl'").run();
+    expect((await ok("/api/runs?searches=true")).others_live).toBe(0);
+  });
+
+  it("a signal set to find who to contact searches each new company, feeding a list or not, for whoever its words describe", async () => {
+    const monitor = await newMonitor({ ...vansSignal, finds: "companies", find_contacts: true, who_to_contact: "the owner's son who works there" });
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    expect(searchOf("bouw.nl").status).toBe("sourcing");
+    expect(searchOf("bouw.nl").icp_prompt).toContain("Who to contact at Bouw BV (bouw.nl): the owner's son who works there.");
+    // A relation is followed as written: by the owner's surname.
+    expect(tasks[0].instruction).toContain("owner's son or daughter who works there");
+    expect(tasks[0].instruction).toContain("owner's surname");
+  });
+
+  it("a signal set not to find who to contact leaves its companies for Find people, even feeding a list", async () => {
+    const monitor = await newMonitor({ ...vansSignal, finds: "companies", find_contacts: false });
+    const check = await beginCheck(monitor);
+    await record(check.id, [bouwFinding]);
+    await finishCheck(check.id);
+    const list = await newList();
+    const attached = await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    expect(attached).toMatchObject({ added: 0, searching: 0, contacts: false });
+    await record((await beginCheck(monitor)).id, [smitFinding]);
+    expect(row("SELECT COUNT(*) AS n FROM runs").n).toBe(0);
+    // Find people still opens the search, and the people found join its list.
+    const bouw = (await findings()).find((f) => f.subject.domain === "bouw.nl")!;
+    await ok(`/api/monitor-observations/${bouw.id}/search`, { method: "POST" });
+    await post(searchOf("bouw.nl").id, [ana]);
+    expect((await ok(`/api/lists/${list.id}/members`)).members.map((m: any) => m.full_name)).toEqual(["Ana de Vries"]);
+  });
+
+  it("a signal records only what it finds, and only a custom signal that finds companies has contacts to find", async () => {
+    const companies = await newMonitor({ ...vansSignal, finds: "companies" });
+    const person = {
+      kind: "custom", subject: { type: "person", name: "Piet de Vries", profile_url: "https://bouw.nl/team/piet" },
+      source_url: "https://bouw.nl/team", summary: "Runs the workshop.", reason: "The owner's son.", occurred_at: null,
+    };
+    const refused = await request(`/api/monitor-checks/${(await beginCheck(companies)).id}/observations`, { method: "POST", body: { observations: [bouwFinding, person] }, headers: AGENT });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain("This signal finds companies");
+    const people = await newMonitor({ ...vansSignal, name: "Creative directors", finds: "people" });
+    const check = await beginCheck(people);
+    const wrong = await request(`/api/monitor-checks/${check.id}/observations`, { method: "POST", body: { observations: [bouwFinding] }, headers: AGENT });
+    expect(wrong.status).toBe(400);
+    expect(wrong.body.error).toContain("This signal finds people");
+    expect(await record(check.id, [person])).toMatchObject({ recorded: 1 });
+    expect(row("SELECT COUNT(*) AS n FROM signal_observations").n).toBe(1);
+    const create = (body: Record<string, unknown>) => request("/api/monitors", { method: "POST", body: { id: crypto.randomUUID(), ...monitorConfig, ...body } });
+    expect((await create({ finds: "people" })).status).toBe(400);
+    expect((await create({ ...vansSignal, finds: "people", find_contacts: true })).status).toBe(400);
+  });
+
+  it("a signal saved before the choice looks for who to contact while it feeds a list, until someone chooses", async () => {
+    const monitor = await newMonitor(vansSignal);
+    const view = async () => (await ok(`/api/monitors/${monitor}`)).monitor;
+    expect(await view()).toMatchObject({ lists_fed: 0 });
+    expect(findsContacts(await view())).toBe(false);
+    await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    expect(findsContacts(await view())).toBe(true);
+    // Chosen in the edit dialog: it holds, list or not.
+    await ok(`/api/monitors/${monitor}`, { method: "PUT", body: { request_id: crypto.randomUUID(), name: vansSignal.name, server_id: serverId, frequency: "once", ends_at: null, find_contacts: false } });
+    expect(await view()).toMatchObject({ find_contacts: false, lists_fed: 1 });
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    expect(row("SELECT COUNT(*) AS n FROM runs").n).toBe(0);
   });
 
   it("a hand-off the agent refuses keeps the searches pending with the reason; each retries on its own", async () => {

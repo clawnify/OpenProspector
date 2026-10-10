@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { SignalsRoute } from "../routes/signals";
 import { MonitorForm, Finding } from "./signal-monitors";
-import { CustomObservationInput } from "../../shared/monitors";
+import { CustomObservationInput, findsContacts } from "../../shared/monitors";
 
 it("keeps templates out of the normal feed and provides an explicit creation entry point", () => {
   const html = renderToStaticMarkup(<MemoryRouter><SignalsRoute /></MemoryRouter>);
@@ -18,7 +18,7 @@ it("keeps templates out of the normal feed and provides an explicit creation ent
 
 it("starts custom monitors with blank name and prompt, no LinkedIn fields or separate ICP", () => {
   const html = renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />);
-  expect(html).toContain("Prompt");
+  expect(html).toContain("Which companies should it find?");
   expect(html).toContain('value=""');
   expect(html).toMatch(/<textarea[^>]*><\/textarea>/);
   expect(html).toContain("person or company");
@@ -77,9 +77,28 @@ it("links found people to Leads opened on that search, and offers a retry only w
   expect(withSearch({ status: "sourcing", stale: 1 })).toContain("Retry");
 });
 
-it("asks a custom signal who to contact at the companies it finds; LinkedIn signals find people already", () => {
-  expect(renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />)).toContain("Who to contact at the companies it finds");
-  expect(renderToStaticMarkup(<MonitorForm kind="post" onClose={() => {}} onSaved={() => {}} />)).not.toContain("Who to contact at the companies");
+it("asks a custom signal whether it finds companies or people; companies come with who to contact, on by default", () => {
+  const custom = renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />);
+  expect(custom).toContain("What should it find?");
+  expect(custom).toMatch(/aria-pressed="true"[^>]*>Companies</);
+  expect(custom).toMatch(/aria-pressed="false"[^>]*>People</);
+  expect(custom).toMatch(/type="checkbox" checked=""\/>.{0,20}Find who to contact at each company/);
+  expect(custom).toContain("Who to contact (optional)");
+  // In words the agent reads: a relation works as well as a title.
+  expect(custom).toContain("the owner&#x27;s son who works there");
+  const linkedin = renderToStaticMarkup(<MonitorForm kind="post" onClose={() => {}} onSaved={() => {}} />);
+  expect(linkedin).not.toContain("What should it find?");
+  expect(linkedin).not.toContain("Find who to contact");
+});
+
+it("looks for who to contact by itself only as set, and a signal saved before the choice while it feeds a list", () => {
+  const signal = { kind: "custom" as const, lists_fed: 0 };
+  expect(findsContacts({ ...signal, finds: "companies", find_contacts: true })).toBe(true);
+  expect(findsContacts({ ...signal, finds: "companies", find_contacts: false, lists_fed: 2 })).toBe(false);
+  expect(findsContacts({ ...signal, finds: "people" })).toBe(false);
+  expect(findsContacts(signal)).toBe(false);
+  expect(findsContacts({ ...signal, lists_fed: 1 })).toBe(true);
+  expect(findsContacts({ kind: "post", lists_fed: 1 })).toBe(false);
 });
 
 it("asks how many new people a check may record, 25 to start", () => {
@@ -88,5 +107,5 @@ it("asks how many new people a check may record, 25 to start", () => {
   expect(html).toContain('value="25"');
   expect(html).not.toContain("<select");
   const custom = renderToStaticMarkup(<MonitorForm kind="custom" onClose={() => {}} onSaved={() => {}} />);
-  expect(custom).toMatch(/new findings(<!-- -->)? per check/);
+  expect(custom).toMatch(/new companies(<!-- -->)? per check/);
 });

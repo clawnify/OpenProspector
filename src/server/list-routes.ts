@@ -500,16 +500,19 @@ listRoutes.post("/api/lists/:id/sources", async (c) => {
   await run("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [list.id, input.kind, sourceId]);
   const added = await backfill(list.id, input.kind, sourceId);
   // A signal's companies nobody searched yet get a search now, newest first, as
-  // many as one of its checks may record: attaching it is the review.
+  // many as one of its checks may record: attaching it is the review. Unless
+  // it is set not to look for who to contact: they wait for Find people.
   let searching = 0;
+  let contacts = true;
   if (signal) {
     const cfg = MonitorInput.parse(JSON.parse(signal.config));
-    const companies = await unsearchedCompanies(sourceId, cfg.max_per_check);
+    contacts = cfg.find_contacts ?? true;
+    const companies = contacts ? await unsearchedCompanies(sourceId, cfg.max_per_check) : [];
     searching = companies.length;
     if (companies.length) await searchCompanies(c.env, origin(c), { id: sourceId, name: cfg.name, who_to_contact: cfg.who_to_contact }, companies);
   }
   if (added > 0) await afterJoin(c.env, origin(c), [list.id]);
-  return c.json({ source: { kind: input.kind, source_id: sourceId }, added, searching }, 201);
+  return c.json({ source: { kind: input.kind, source_id: sourceId }, added, searching, contacts }, 201);
 });
 
 listRoutes.delete("/api/lists/:id/sources/:kind/:sourceId", async (c) => {

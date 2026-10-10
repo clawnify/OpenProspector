@@ -7,7 +7,7 @@ import { SignalsRoute } from "./routes/signals";
 import { AddToList, ListDetail, ListsIndex } from "./routes/lists";
 import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
-import { RunsPanel } from "./components/runs-panel";
+import { RunFilter, RunsPanel } from "./components/runs-panel";
 import { Settings } from "./routes/settings";
 
 // One definition of the navigation (DESIGN.md → The shell). <AppNav> paints
@@ -57,7 +57,12 @@ export function App() {
   const [cacheDays, setCacheDays] = useState(90);
 
   const [runs, setRuns] = useState<Run[]>([]);
+  // Runs left out of `runs` (a list's re-runs, a signal's company searches)
+  // that are working now: their people still land in the table below.
+  const [othersLive, setOthersLive] = useState(0);
   const [runFilter, setRunFilter] = useState<string | null>(null);
+  // The run the table is filtered to, when it is not one of the rows above.
+  const [fetchedRun, setFetchedRun] = useState<Run | null>(null);
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
@@ -97,7 +102,11 @@ export function App() {
 
   const loadRuns = useCallback(async () => {
     try {
-      setRuns((await api.runs()).runs);
+      // Only the searches someone started. A signal's company searches show
+      // on Signals, under each company, and a list's re-runs on the list.
+      const r = await api.runs(1, { searchesOnly: true });
+      setRuns(r.runs);
+      setOthersLive(r.others_live);
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
     }
@@ -123,6 +132,7 @@ export function App() {
   // stalled will not change on its own, so polling then is pure noise — and this
   // app is embedded in a dashboard iframe that may sit open all day.
   const hasLiveRun =
+    othersLive > 0 ||
     runs.some((r) => !r.stale && (r.status === "sourcing" || r.status === "enriching")) ||
     // A lead parked on a vendor callback resolves out of band, with no run to
     // watch when it was enriched by hand — so it is a live signal on its own.
@@ -299,6 +309,32 @@ export function App() {
       setPage(1);
     }
   }, [location.search]);
+
+  // Filtering the table to a run, or back to every lead. The URL follows, so
+  // a reload, or the dashboard restoring this screen, keeps the same view.
+  const filterRun = (id: string | null) => {
+    setRunFilter(id);
+    setPage(1);
+    routerNavigate(id ? `/?run=${encodeURIComponent(id)}` : "/", { replace: true });
+  };
+
+  // A company search is no row in Searches, so the filter pill reads it here.
+  const filterShown = runs.some((r) => r.id === runFilter);
+  useEffect(() => {
+    setFetchedRun(null);
+    if (!runFilter || filterShown) return;
+    let current = true;
+    api.run(runFilter).then(
+      (r) => {
+        if (current) setFetchedRun(r.run);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [runFilter, filterShown]);
+  const filteredRun = runs.find((r) => r.id === runFilter) ?? fetchedRun;
 
   // Collapse folds the SDK sidebar to icons. The toggle lives here, not in
   // <AppNav>, because 0.2.0 has no slot for it; the proper home is the SDK.
@@ -510,18 +546,12 @@ export function App() {
                     </Card>
                   ) : null}
 
-                  <RunsPanel
-                    runs={runs}
-                    activeRunId={runFilter}
-                    onFilterRun={(id) => {
-                      setRunFilter(id);
-                      setPage(1);
-                    }}
-                  />
+                  <RunsPanel runs={runs} activeRunId={runFilter} onFilterRun={filterRun} />
                 </div>
 
                 <LeadsTable
                   leads={leads}
+                  filter={runFilter ? <RunFilter run={filteredRun} onClear={() => filterRun(null)} /> : null}
                   providers={providers}
                   total={total}
                   page={page}

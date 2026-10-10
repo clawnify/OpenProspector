@@ -46,9 +46,10 @@ Open **Signals → New signal** to choose a starting point:
 - **Team posts:** posts from up to ten explicitly selected employee profiles.
 - **Specific post:** one LinkedIn post URL, checked for newly observed engagement.
 - **LinkedIn search:** posts and conversations matching a query.
-- **Start from scratch:** a blank, source-neutral prompt. Each finding identifies
-  a Person (verified profile/bio URL) or Company (verified domain), explains why
-  it is a signal, and links to supporting evidence. For example, a magazine
+- **Start from scratch:** a blank, source-neutral prompt for companies or for
+  people, chosen first. Each finding identifies a Company (verified domain) or a
+  Person (verified profile/bio URL), as chosen, explains why it is a signal, and
+  links to supporting evidence. For example, a magazine
   article about a company is evidence for a Company signal, not a standalone
   article result. There is no separate required ICP field.
 
@@ -84,19 +85,28 @@ a check closes it to writes but does not terminate the agent's session. An
 uncertain dispatch is not automatically retried; inspect or interrupt it first.
 **Edit** changes a saved monitor's name, who to look for, agent, frequency, end
 date and how many new findings one check may record (25 by default, up to 100;
-the rest wait for the next check). Its schedule follows the edit. What a
+the rest wait for the next check), and on a custom monitor that finds companies,
+whether it finds who to contact there. Its schedule follows the edit. What a
 LinkedIn monitor watches stays fixed, because its findings and baseline belong
 to that profile, post or query: create another monitor to watch something else.
-A custom monitor's prompt can be edited.
+A custom monitor's prompt can be edited; whether it finds companies or people
+stays fixed.
 
-**Companies a signal finds.** A custom monitor can find companies as well as
-people. For each company there is one search, whichever monitors find it, for
-the person to contact there: the owner of a small business by default, or the
-role you set in **Who to contact at the companies it finds**. A monitor that
-feeds a list opens these searches by itself, handing a check's companies to the
-agent in one task, and their people join the list. Attaching a monitor to a list
-also searches the companies it already found, newest first, up to its per-check
-limit. Otherwise **Find people** on a company finding opens the search by hand.
+**Companies a signal finds.** For each company a custom monitor finds there is
+one search, whichever monitors find it, for the person to contact there: the
+owner of a small business by default, or whoever you describe in **Who to
+contact**. Describe them in plain words, since the agent reads it: a role ("the
+Creative Director"), a situation ("someone new in the job") or a relation ("the
+owner's son who works there", found by the owner's surname on the team page or
+in the company registry). The agent adds nobody rather than guess. With **Find
+who to contact at each company** on, the default, each check hands its new
+companies to the agent in one task, and their people join the lists the monitor
+feeds. Attaching such a monitor to a list also searches the companies it already
+found, newest first, up to its per-check limit. Off, its companies wait: **Find
+people** on a company finding opens that search by hand, and the people found
+still join the monitor's lists. A custom monitor made before this choice finds
+either kind, and searches companies only while it feeds a list, until you set
+the switch in its settings.
 
 **A company's inbox.** When the company's own site shows a general address
 (info@, contact@, office@), the search keeps it too, as the company's inbox: no
@@ -278,6 +288,8 @@ Sourcing and enrichment are deliberately different jobs, and this app only does 
 4. **You export.** CSV, or a POST to your CRM or sequencer.
 
 Progress shows up on the search itself — sourcing, enriching, done — including a **stalled** state if the agent stops reporting, so a search that died is never mistaken for one still working.
+
+**Searches** on the Leads page lists the searches you started. The ones that start by themselves show where they come from: a signal's search at each company on Signals, under that company, and a list's re-runs on the list. Leads opened from a company's **people to contact** shows a pill naming the company, with a way back to every lead.
 
 If the app can't reach your agent, it hands you the brief to paste into your agent's chat instead. The search is saved either way, and can be retried.
 
