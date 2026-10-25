@@ -369,7 +369,7 @@ async function settleField(
  * away. Every resolved value reaches a lead through here, which is what keeps
  * the "+N older finds" in the table complete.
  */
-async function writeField(
+export async function writeField(
   row: Record<string, unknown>,
   field: EnrichField,
   hit: { value: string; verified: boolean; providerId: string },

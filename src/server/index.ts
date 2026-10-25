@@ -1,4 +1,4 @@
-import { createApp, createRoute, z } from "@clawnify/app";
+import { caller, createApp, createRoute, z } from "@clawnify/app";
 import { enqueueJob, verifyDelivery } from "@clawnify/queue";
 import type { CredentialBinding } from "@clawnify/connections";
 import { get, query, run } from "./db.js";
@@ -15,6 +15,7 @@ import {
   finishRunIfDrained,
   resumeLead,
   tryNextProvider,
+  writeField,
   type EnrichEnv,
   type EnrichOptions,
 } from "./enrich.js";
@@ -1314,6 +1315,104 @@ app.openapi(getLead, async (c) => {
   );
   const [withFinds] = await withOlderEmails([lead]);
   return c.json({ lead: withFinds, attempts }, 200);
+});
+
+/** What a person or agent may correct on a lead. */
+const LeadEdit = z
+  .object({
+    full_name: z.string().max(300),
+    title: z.string().max(300),
+    company: z.string().max(300),
+    domain: z.string().max(300),
+    linkedin_url: z.string().max(500),
+    location: z.string().max(300),
+    email: z.string().max(320),
+    phone: z.string().max(60),
+  })
+  .partial()
+  .strict();
+
+const updateLead = createRoute({
+  method: "patch",
+  path: "/api/leads/{id}",
+  tags: ["Leads"],
+  summary: "Correct a lead's fields",
+  description:
+    "Sets the fields sent and leaves the rest. A changed email or phone keeps the value it replaces among the lead's older finds, as a new provider answer would; the new one has no provider and is not verified.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: { content: { "application/json": { schema: LeadEdit } } },
+  },
+  responses: {
+    200: { description: "The lead as it now is", content: { "application/json": { schema: z.object({ lead: LeadWithFindsSchema }) } } },
+    403: { description: "A sibling app cannot change leads", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(updateLead, async (c) => {
+  if (caller(c) === "app") return c.json({ error: "Changing a lead is for people and agents." }, 403);
+  const id = c.req.valid("param").id;
+  const { email, phone, ...plain } = c.req.valid("json");
+  const row = await get<Record<string, unknown>>("SELECT * FROM leads WHERE id = ?", [id]);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  for (const [field, value] of [["email", email], ["phone", phone]] as const) {
+    // Sending the value the lead already has keeps how it was found.
+    if (value !== undefined && value.trim().toLowerCase() !== String(row[field] || "").toLowerCase()) {
+      await writeField(row, field, { value: value.trim(), verified: false, providerId: "" });
+    }
+  }
+  const sets = Object.entries(plain)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .map(([column, value]) => [column, column === "domain" ? bareDomain(value) : value.trim()] as const);
+  if (sets.length > 0) {
+    await run(
+      `UPDATE leads SET ${sets.map(([column]) => `${column} = ?`).join(", ")}, updated_at = datetime('now') WHERE id = ?`,
+      [...sets.map(([, value]) => value), id],
+    );
+  }
+  const lead = await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]);
+  const [withFinds] = await withOlderEmails([lead!]);
+  return c.json({ lead: withFinds }, 200);
+});
+
+const deleteLead = createRoute({
+  method: "delete",
+  path: "/api/leads/{id}",
+  tags: ["Leads"],
+  summary: "Delete a lead",
+  description:
+    "Removes the lead with its older finds and list places, and drops any provider answer it is waiting on. What enriching it cost stays in the ledger and in its run's totals. Deleting does not block the person: a later search or signal can find them again.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "Deleted", content: { "application/json": { schema: z.object({ ok: z.boolean() }) } } },
+    403: { description: "A sibling app cannot delete leads", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "The lead is being enriched right now", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+app.openapi(deleteLead, async (c) => {
+  if (caller(c) === "app") return c.json({ error: "Deleting a lead is for people and agents." }, 403);
+  const id = c.req.valid("param").id;
+  const lead = await get<LeadRow>(`SELECT ${LEAD_SELECT} FROM leads WHERE id = ?`, [STRANDED_AFTER, id]);
+  if (!lead) return c.json({ error: "Not found" }, 404);
+  // A pass still running would write to the lead after it is gone.
+  if (lead.enrich_status === "running" && !lead.stale) {
+    return c.json({ error: "This lead is being enriched. Delete it once that pass finishes." }, 409);
+  }
+  // Explicit, rather than trusting the foreign keys to cascade: the spend ledger
+  // and the signal that found the person outlive the lead, so they are only
+  // unlinked; its older finds, list places and pauses go with it.
+  await run("UPDATE enrichment_attempts SET lead_id = NULL WHERE lead_id = ?", [id]);
+  await run("UPDATE signal_observations SET lead_id = NULL WHERE lead_id = ?", [id]);
+  await run("DELETE FROM lead_finds WHERE lead_id = ?", [id]);
+  await run("DELETE FROM list_members WHERE lead_id = ?", [id]);
+  await cancelPending(id);
+  await run("DELETE FROM leads WHERE id = ?", [id]);
+  // It may have been the last lead its run was waiting on.
+  await finishRunIfDrained(lead.run_id ?? null);
+  return c.json({ ok: true }, 200);
 });
 
 // ── Enrichment ──────────────────────────────────────────────────────
