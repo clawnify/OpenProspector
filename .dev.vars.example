@@ -25,6 +25,9 @@ KASPR_API_KEY=
 DROPCONTACT_API_KEY=
 ZELIQ_API_KEY=
 
+# Company-only firmographics. Does not run the email or phone waterfalls.
+COMPANYENRICH_API_KEY=
+
 # Three vendors need more than one opaque token, so their secrets are compound:
 #   Forager puts the account id in the URL path.
 FORAGER_API_KEY=accountId:apiKey

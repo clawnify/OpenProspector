@@ -294,16 +294,25 @@ app.openapi(listProviders, async (c) => {
       continue;
     }
     const key = (c.env as Record<string, unknown>)[cp.secretName];
+    const configured = typeof key === "string" && key.length > 0;
+    let creditsRemaining: number | null = null;
+    if (wantCredits && configured && cp.credits) {
+      try {
+        creditsRemaining = (await cp.credits(key)).remaining;
+      } catch {
+        creditsRemaining = null;
+      }
+    }
     providers.push({
       id: cp.id,
       label: cp.label,
       fields: ["company"],
       secret_name: cp.secretName,
       signup_url: cp.signupUrl,
-      configured: typeof key === "string" && key.length > 0,
+      configured,
       status: "available" as const,
       ...(cp.keyFormat ? { key_format: cp.keyFormat } : {}),
-      ...(wantCredits ? { credits_remaining: null } : {}),
+      ...(wantCredits ? { credits_remaining: creditsRemaining } : {}),
     });
   }
 
