@@ -216,6 +216,7 @@ It exists because the LinkedIn Matched Audiences **company** upload asks for exa
 | 12 | **ContactOut** | 1 search credit per company found | name, industry, page, country |
 | 13 | **Surfe** | 1 credit | no city, state or zip — HQ is one free-text line |
 | 14 | **Snov.io** | 1 credit **per request, match or not** | name, industry, city, founded |
+| 15 | **CompanyEnrich** | 1 credit; actual cost from response header | everything except an exact employee count |
 
 **Apollo leads because its key works on the free plan** — the one vendor here you can turn on without buying anything — and it still fills every column.
 
@@ -224,6 +225,10 @@ It exists because the LinkedIn Matched Audiences **company** upload asks for exa
 That does **not** mean paying every vendor for every company. The search stops the moment the four fields the upload and the UI actually read are filled — LinkedIn page, industry, city, country — so one full-coverage key still costs exactly one call. And each adapter declares what its vendor can return at all, so a vendor that could only re-buy what you already hold is skipped without being called, and logged as such. A ticker is never chased: most companies do not have one, and hunting it would spend a credit at every configured vendor on nearly every private company.
 
 **Vendors with no company API.** Skrapp and Anymail Finder are person-only. Zeliq's documented API is three endpoints — credit balance, enrich phone, enrich email. Dropcontact returns company fields only bundled into a contact enrichment that requires a contact identifier. Kaspr keys every lookup on a person's profile URL. These are not roadmap items; there is nothing to wait for.
+
+**CompanyEnrich.** [CompanyEnrich](https://companyenrich.com/) provides APIs for company and people research, including company profiles, search and lookalikes. Set `COMPANYENRICH_API_KEY` to use its [domain-enrichment API](https://docs.companyenrich.com/reference/get_companies-enrich) in the company waterfall. Settings can read the remaining balance through the free `/me` endpoint. The adapter uses `waitForEnrichment=false`: a domain without stored data returns a free miss and may become available after background enrichment, on a later run. Paid calls are not automatically retried; a transport failure records unknown credit usage in the attempt detail.
+
+This adapter intentionally covers company firmographics only. OpenProspector's sourcing is agent-led, while its person waterfalls find email addresses and phone numbers; CompanyEnrich's professional-profile search is neither of those. Its employee fields are ranges, so they are not presented as exact headcounts. Workforce expansion costs extra and is not requested. Company search, lookalikes, people search/lookup, batch enrichment and extra fields beyond `CompanyRecord` remain available through the [CompanyEnrich API](https://docs.companyenrich.com/reference), outside this domain-based waterfall.
 
 ### Vendors that answer later
 
