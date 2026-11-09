@@ -126,13 +126,16 @@ export interface AgentState {
   servers: AgentServer[];
 }
 
-export type Refresh = "hourly" | "daily" | "weekly" | "off";
+export type Refresh = "hourly" | "daily" | "weekly" | "biweekly" | "off";
 
-/** A list of people that keeps filling from searches and signals. */
+/** A list of leads that keeps filling from its searches. */
 export interface ProspectList {
   id: string;
   name: string;
+  /** How often its most frequent search runs again; "off" when none repeats. */
   refresh: Refresh;
+  /** Searches and signals feeding it. */
+  source_count: number;
   member_count: number;
   verified_count: number;
   email_daily_cap: number | null;
@@ -149,11 +152,17 @@ export interface ListSource {
   name: string;
   added_at: string;
   missing: boolean;
+  /** A search: how often this list runs it again, and when next. */
+  refresh?: Refresh | null;
+  next_refresh_at?: string | null;
+  search_source?: "icp" | "sales_navigator" | null;
   last_refresh?: { id: string; status: string; error: string; lead_count: number; created_at: string; stale: number } | null;
   hold?: "working" | "failed" | "stalled" | "undelivered" | null;
+  /** A signal: its own schedule, and the whole signal. */
   frequency?: string | null;
   active?: boolean | null;
   schedule_error?: string | null;
+  monitor?: Monitor | null;
 }
 
 export interface ListConsumer {
@@ -167,6 +176,8 @@ export interface ListMember extends Lead {
   added_at: string;
   source_kind: "search" | "signal" | "manual";
   source_id: string;
+  /** The search's description or the signal's name; null when added by hand. */
+  source_name: string | null;
 }
 
 /**
@@ -199,13 +210,17 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   signalAgents: (page = 1) => req<{ servers: AgentServer[]; page: { has_more: boolean }; selected: string | null }>(`/api/signal-agents?page=${page}`),
-  monitors: (page = 1) => req<{ monitors: Monitor[]; total: number; page: number; limit: number }>(`/api/monitors?page=${page}`),
+  /** `unlisted`: only the signals that feed no list (To review). */
+  monitors: (page = 1, unlisted = false) =>
+    req<{ monitors: Monitor[]; total: number; page: number; limit: number }>(`/api/monitors?page=${page}${unlisted ? "&unlisted=true" : ""}`),
   createMonitor: (id: string, config: MonitorConfig) => req<{ monitor: Monitor }>("/api/monitors", { method: "POST", body: JSON.stringify({ id, ...config }) }),
   editMonitor: (id: string, requestId: string, settings: MonitorEditInput) => req<{ monitor: Monitor }>(`/api/monitors/${id}`, { method: "PUT", body: JSON.stringify({ request_id: requestId, ...settings }) }),
   toggleMonitor: (id: string, active: boolean) => req<{ monitor: Monitor }>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ active }) }),
   runMonitor: (monitor: string, id: string) => req<{ check: { id: string; status: string } }>(`/api/monitors/${monitor}/run`, { method: "POST", body: JSON.stringify({ id }) }),
   interruptCheck: (id: string) => req<{ ok: boolean }>(`/api/monitor-checks/${id}/interrupt`, { method: "POST" }),
-  observations: (page = 1) => req<{ observations: Observation[]; total: number; page: number; limit: number }>(`/api/monitor-observations?page=${page}`),
+  /** `review`: only the findings waiting for a person (To review). */
+  observations: (page = 1, review = false) =>
+    req<{ observations: Observation[]; total: number; page: number; limit: number }>(`/api/monitor-observations?page=${page}${review ? "&review=true" : ""}`),
   promoteObservation: (id: string) => req<{ lead_id: string }>(`/api/monitor-observations/${id}/lead`, { method: "POST" }),
   findPeople: (id: string) => req<{ observation: Observation }>(`/api/monitor-observations/${id}/search`, { method: "POST" }),
   providers: (withCredits = false) =>
@@ -246,13 +261,21 @@ export const api = {
   list: (id: string) =>
     req<{ list: ProspectList; cap_from: "list" | "consumers" | "none"; sources: ListSource[]; consumers: ListConsumer[] }>(`/api/lists/${id}`),
   listMembers: (id: string, page = 1) => req<{ members: ListMember[]; total: number; page: number; limit: number }>(`/api/lists/${id}/members?page=${page}`),
-  createList: (body: { name: string; refresh?: Refresh; email_daily_cap?: number | null }) =>
+  createList: (body: { name: string; email_daily_cap?: number | null }) =>
     req<{ list: ProspectList }>("/api/lists", { method: "POST", body: JSON.stringify(body) }),
-  updateList: (id: string, body: { name?: string; refresh?: Refresh; email_daily_cap?: number | null }) =>
+  updateList: (id: string, body: { name?: string; email_daily_cap?: number | null }) =>
     req<{ list: ProspectList }>(`/api/lists/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteList: (id: string) => req<{ ok: boolean }>(`/api/lists/${id}`, { method: "DELETE" }),
-  addListSource: (id: string, kind: "search" | "signal", source_id: string) =>
-    req<{ added: number; searching: number; contacts: boolean }>(`/api/lists/${id}/sources`, { method: "POST", body: JSON.stringify({ kind, source_id }) }),
+  /** `refresh`: a search's repeat in this list. A signal keeps its own schedule. */
+  addListSource: (id: string, kind: "search" | "signal", source_id: string, refresh?: Refresh) =>
+    req<{ added: number; searching: number; contacts: boolean }>(`/api/lists/${id}/sources`, {
+      method: "POST",
+      body: JSON.stringify({ kind, source_id, ...(refresh ? { refresh } : {}) }),
+    }),
+  setSearchRefresh: (id: string, source_id: string, refresh: Refresh) =>
+    req<{ source: ListSource }>(`/api/lists/${id}/sources/search/${encodeURIComponent(source_id)}`, { method: "PATCH", body: JSON.stringify({ refresh }) }),
+  runListSearch: (id: string, source_id: string) =>
+    req<{ started: number; failed: number }>(`/api/lists/${id}/sources/search/${encodeURIComponent(source_id)}/run`, { method: "POST" }),
   removeListSource: (id: string, kind: "search" | "signal", source_id: string) =>
     req<{ ok: boolean }>(`/api/lists/${id}/sources/${kind}/${encodeURIComponent(source_id)}`, { method: "DELETE" }),
   addToList: (id: string, lead_ids: string[]) =>

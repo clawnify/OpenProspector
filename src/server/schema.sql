@@ -326,8 +326,9 @@ CREATE INDEX IF NOT EXISTS idx_signals_occurred ON signals(occurred_at);
 CREATE TABLE IF NOT EXISTS lists (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  -- How often its searches are run again: hourly|daily|weekly|off. Signals
-  -- keep the schedule they were created with.
+  -- Retired: one schedule for all of a list's searches. Each search now has
+  -- its own (list_sources.refresh), which a search attached before took from
+  -- here. Kept for those rows; a list created since stores 'off'.
   refresh TEXT NOT NULL DEFAULT 'daily',
   -- Automatic email lookups per UTC day. Null: as many as the campaigns
   -- reading the list take a day (the sum of list_consumers.daily).
@@ -348,6 +349,14 @@ CREATE TABLE IF NOT EXISTS list_sources (
   kind TEXT NOT NULL, -- search|signal
   source_id TEXT NOT NULL,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- A search: how often this list runs it again (hourly|daily|weekly|biweekly|off),
+  -- and when it runs next. Each search has its own; a signal keeps its own
+  -- schedule, so these stay null on one. Null on a search attached before
+  -- searches had their own: it takes its list's old refresh the first time the
+  -- list is read (lists.ts, adoptListRefresh).
+  refresh TEXT,
+  next_refresh_at TEXT,
+  last_refreshed_at TEXT,
   PRIMARY KEY (list_id, kind, source_id)
 );
 

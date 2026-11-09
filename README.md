@@ -40,21 +40,28 @@ The savings are not theoretical:
 
 ## Signals
 
-Open **Signals → New signal** to choose a starting point:
+A signal is a search that repeats and records what it finds with its evidence.
+You make one inside a list (**Add search**), and what it finds joins that list:
+
+- **Companies or people:** describe who in your own words. Your agent researches
+  the web; companies come with a search for who to contact there.
 
 - **My LinkedIn posts:** one profile's recent and new posts.
 - **Team posts:** posts from up to ten explicitly selected employee profiles.
 - **Specific post:** one LinkedIn post URL, checked for newly observed engagement.
 - **LinkedIn search:** posts and conversations matching a query.
-- **Start from scratch:** a blank, source-neutral prompt for companies or for
-  people, chosen first. Each finding identifies a Company (verified domain) or a
-  Person (verified profile/bio URL), as chosen, explains why it is a signal, and
-  links to supporting evidence. For example, a magazine
-  article about a company is evidence for a Company signal, not a standalone
-  article result. There is no separate required ICP field.
 
-Choose the agent, describe your ICP for LinkedIn templates, and run once or repeat daily/weekly. The
-first check starts immediately. Recurring work uses that agent's native
+A **Companies or people** search is a blank, source-neutral prompt for companies
+or for people, chosen first. Each finding identifies a Company (verified domain)
+or a Person (verified profile/bio URL, plus their company and its domain when
+known, which the email lookup needs), as chosen, explains why it is a signal, and
+links to supporting evidence. For example, a magazine article about a company is
+evidence for a Company signal, not a standalone article result. There is no
+separate required ICP field.
+
+Describe your ICP for LinkedIn templates, and run once or repeat every day, week
+or two weeks. The agent is the one named in Settings, or the only one there is;
+otherwise you choose it. The first run starts immediately. Recurring work uses that agent's native
 scheduler, with the full versioned procedure embedded in its prompt; no skill
 installation on the agent is needed. The app must have access to the Clawnify
 agents API and the selected agent must support app-created schedule receipts.
@@ -68,15 +75,17 @@ can appear later.
 Custom prompts use the agent's available research tools and the requested
 sources/time range (30 days when unspecified). Checks inspect up to 30 source
 pages and record up to 100 findings. Company findings remain typed company
-references in the signal feed; they are never added to People. Person findings
-can be explicitly added to People without fabricating a LinkedIn URL. Custom
+references; they are never added to Leads. Person findings become leads without
+fabricating a LinkedIn URL. Custom
 findings deduplicate by subject and evidence URL, not by the agent's wording.
 
 Uncheck **Include existing engagement** to establish a hidden first-run
 baseline. A failed check does not complete that baseline. Repeated sightings
 are deduplicated per monitor; different people and comments remain distinct.
-Findings retain evidence, ICP fit and outreach context. **Add to people** is an
-explicit, idempotent review action; monitoring never starts enrichment or outreach.
+Findings retain evidence, ICP fit and outreach context, and a lead in a list shows
+them under **Why**. A signal in a list adds the people it finds to the list as it
+finds them; one in no list leaves its findings on **To review**, where **Add to
+leads** is an explicit, idempotent review action. A signal never starts outreach.
 
 Saved monitors can be rerun or paused. An optional end date blocks further
 research and pauses the native schedule when it next attempts a check. Pausing
@@ -84,8 +93,8 @@ also blocks new findings if the agent is temporarily unreachable. Interrupting
 a check closes it to writes but does not terminate the agent's session. An
 uncertain dispatch is not automatically retried; inspect or interrupt it first.
 **Edit** changes a saved monitor's name, who to look for, agent, frequency, end
-date and how many new findings one check may record (25 by default, up to 100;
-the rest wait for the next check), and on a custom monitor that finds companies,
+date and how many new findings one run may record (10 in the form, up to 100;
+the rest wait for the next run), and on a custom monitor that finds companies,
 whether it finds who to contact there. Its schedule follows the edit. What a
 LinkedIn monitor watches stays fixed, because its findings and baseline belong
 to that profile, post or query: create another monitor to watch something else.
@@ -287,7 +296,7 @@ Sourcing and enrichment are deliberately different jobs, and this app only does 
 
 Progress shows up on the search itself — sourcing, enriching, done — including a **stalled** state if the agent stops reporting, so a search that died is never mistaken for one still working.
 
-**Searches** on the Leads page lists the searches you started. The ones that start by themselves show where they come from: a signal's search at each company on Signals, under that company, and a list's re-runs on the list. Leads opened from a company's **people to contact** shows a pill naming the company, with a way back to every lead.
+**Searches** on the Leads page lists the one-off searches you started there; they run once. For leads that keep coming, add a search to a list. The searches that start by themselves show where they come from: a list's re-runs on the list, and the search for the people at a company a signal in no list found on **To review**, under that company. Leads opened from a company's **people to contact** shows a pill naming the company, with a way back to every lead.
 
 If the app can't reach your agent, it hands you the brief to paste into your agent's chat instead. The search is saved either way, and can be retried.
 
@@ -302,11 +311,37 @@ Already built the list in Sales Navigator? Switch the search card to **Sales Nav
 
 ## Lists
 
-A list is where people collect for outreach. It keeps filling from the searches and signals you attach to it, so a campaign can take a few new people from it every day.
+Lists are the app's home page. A list is where leads collect for outreach: it
+holds the searches that fill it, and a campaign can take a few new leads from it
+every day. Its page is its leads, with the searches that fill it above them.
 
-- **Sources.** Attach any searches and any signals. The people a search finds join the list, and so do the people its re-runs find. The people a signal finds join without the usual review, since attaching the signal to a list is that review; companies never do. You can also select people on the Leads page and add them by hand. Someone is in a list once: a second lead with the same profile, or the same name at the same domain, is left out.
-- **Refresh.** A list runs its searches again every hour, day or week, or only when you press **Refresh now**, handing each search to your agent as a new run. Signals keep the schedule they were created with. A re-run that fails or stops reporting holds that search until you look at it, rather than handing the same work to a broken agent every hour.
-- **Email lookups, capped per day.** New people without an email are looked up on their own: emails only, from the cache when it has them, and never twice. A list starts at most its daily cap of lookups per UTC day. Leave the cap empty and it follows demand: the sum of what the campaigns reading the list take a day. With neither, nothing is bought on its own. Phones are never bought automatically.
+- **Searches.** An empty list opens on **Who should this list find?**:
+  companies or people, in your own words (a signal). **Add search** also offers
+  LinkedIn engagement, a Sales Navigator list, or a search or signal you already
+  have. A signal adds the people it finds without the usual review, since adding
+  it to the list is that review; companies never join, their people do. You can
+  also select leads on the Leads page and add them by hand. Someone is in a list
+  once: a second lead with the same profile, or the same name at the same
+  domain, is left out.
+- **Each search repeats on its own.** A signal keeps its own repeat (once, every
+  day, week or two weeks), and an edit to it applies in every list it feeds. A
+  described profile or a Sales Navigator export repeats as set on its row in the
+  list, each run handed to your agent as a new run; **Run now** runs it at once.
+  A re-run that fails or stops reporting holds that search until you look at it,
+  rather than handing the same work to a broken agent again. A list has no
+  schedule of its own: one that had one (before searches had their own) passes it
+  to each of its searches the first time it is read.
+- **Email lookups, capped per day.** A new list asks how many emails it may look
+  up a day. New leads without an email are then looked up on their own: emails
+  only, from the cache when it has them, and never twice, at most that many per
+  UTC day. Leave it empty and it follows demand: the sum of what the campaigns
+  reading the list take a day. With neither, nothing is bought on its own, and
+  its leads say **Not looked up**. Phones are never bought automatically.
+- **Why and found by.** Each lead in a list shows the evidence for why it fits
+  and which search found it.
+- **To review.** A signal that feeds no list leaves its findings on **To review**,
+  shown in the menu only when something waits there: add a person to Leads, find
+  people at a company, or put the signal in a list.
 - **Campaigns read them.** An outreach app in the same workspace, such as OpenSequence, registers as a reader of a list with how many people a day it takes, then reads the people who have a verified email, oldest first (`GET /api/lists/{id}/members?email_verified=true`).
 
 ## How the Waterfall Works

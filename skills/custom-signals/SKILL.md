@@ -1,7 +1,7 @@
 ---
 name: custom-signals
 description: Run a saved custom prospecting prompt and record evidence-backed Person or Company signals. Not for the four LinkedIn templates.
-version: 3
+version: 4
 ---
 
 # Custom signal research
@@ -37,7 +37,8 @@ create another task/schedule. Do not install this skill on the agent.
     source_url: "https://publisher.example/article", summary: "What happened",
     reason: "Why this is a signal for the user's prompt", occurred_at: null}.
    For a person, replace subject with {type: "person", name: "...",
-   profile_url: "https://example.com/people/name"}. Use a verified profile or bio,
+   profile_url: "https://example.com/people/name", company, domain} (both
+   when known: email lookup needs them). Use a verified profile or bio,
    not a fabricated social URL. Domains have no scheme/path; URLs use HTTP(S).
    occurred_at is the actual event timestamp or null when unknown, never today's
    date as a substitute. Save one finding per subject per evidence URL; combine

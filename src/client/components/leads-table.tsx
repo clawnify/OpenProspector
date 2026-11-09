@@ -35,7 +35,8 @@ export function StatusBadge({ lead }: { lead: Lead }) {
     );
   }
   if (lead.enrich_status === "failed") return <Badge tone="danger">Failed</Badge>;
-  if (lead.enrich_status === "pending") return <Badge tone="neutral">Pending</Badge>;
+  // Nothing happens to it on its own: Enrich, or a list's daily lookups, start it.
+  if (lead.enrich_status === "pending") return <Badge tone="neutral">Not looked up</Badge>;
   // "done" splits by outcome — a finished lead with nothing found is not a success.
   return lead.email ? (
     <Badge tone="success">
