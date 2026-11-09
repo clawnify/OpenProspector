@@ -65,14 +65,15 @@ unreported task looks identical to a dead one.
 
 ## Pages
 
-- `/signals` — New signal offers own-post, team-post, single-post, query or custom monitors;
-  review engagement evidence before explicitly adding someone to People.
-
-- `/` — the whole app: ICP box, both waterfall panels, and the leads table.
-  **Searches** there lists only the searches someone started (`GET /api/runs?searches=true`);
-  a signal's company searches show on `/signals`, under each company.
+- `/` — Lists, the home page. `/lists/{id}` is one list: the searches that fill
+  it (signals and searches, each with its own repeat) above its leads, with why
+  each fits and which search found it. A new search is made there.
+- `/leads` — every lead: the one-off ICP box, **Searches** (only the searches
+  someone started, `GET /api/runs?searches=true`) and the leads table.
   **Screenshot-friendly**: the leads table with resolved emails and provider
   attribution is the money shot.
+- `/review` — To review: signals that feed no list, and their findings, waiting
+  for someone to add a person to Leads or put the signal in a list.
 
 ## API
 
@@ -112,8 +113,10 @@ that matter:
   page, read once per company.
 - Never look up emails yourself. If the run has `auto_enrich: 1`, finish with
   `POST /api/runs/{id}/enrich`, which only looks up emails for these runs.
-- These findings do **not** automatically create leads, enrich or contact anyone.
-  The user chooses **Add to people**. Never call enrichment/export during a check.
+- Recording a finding never enriches or contacts anyone. The app adds what a
+  signal finds to the lists it feeds; a signal in no list leaves its findings
+  for the user to review (**Add to leads**). Never call enrichment/export
+  during a check.
 
 Full schemas: `GET /llms.txt` (index) or `GET /api/openapi.json`. Every list
 endpoint is paginated (`?page=`, `?limit=` max 100, `?search=`) — nothing
@@ -161,20 +164,20 @@ be lower than what you sent; the difference is the unenrichable rows.
 
 ### Lists
 
-A list collects people from the searches and signals a user attached to it, so a
-campaign can read new people from it every day. The user sets lists up on the
-**Lists** page: which sources feed it, how often its searches run again, and how
-many emails it may look up a day.
+A list collects leads from the searches and signals in it, so a campaign can
+read new people from it every day. The user sets lists up on their page: the
+searches that fill it, how often each repeats, and how many emails it may look
+up a day. A list has no schedule of its own; each search in it has one.
 
-- A list's searches come back to you as ordinary search tasks on its schedule.
-  Work them like any other search. The leads you post join the list on their
-  own; do not add them to it by hand.
+- A list's searches come back to you as ordinary search tasks on their own
+  schedule. Work them like any other search. The leads you post join the list on
+  their own; do not add them to it by hand.
 - Read lists with `GET /api/lists` and their people with
   `GET /api/lists/{id}/members` (`?email_verified=true` for verified emails).
 - `POST /api/lists/{id}/members` `{ "lead_ids": [...] }` adds people by hand,
   when the user asks you to.
-- Never start lookups or refreshes yourself. A list looks up emails within its
-  daily cap and refreshes on its own schedule.
+- Never start lookups or re-runs yourself. A list looks up emails within its
+  daily cap, and its searches run again on their own schedule.
 
 ### Company searches
 

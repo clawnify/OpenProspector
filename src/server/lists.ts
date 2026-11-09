@@ -6,9 +6,9 @@
 // 1. People join. Leads posted to a search join the lists that search feeds
 //    (and so do the leads of every re-run of it); a person a signal finds joins
 //    the lists that signal feeds. A person is in a list once.
-// 2. Its searches run again on its cadence (hourly, daily, weekly), each as a
-//    new run handed to the agent the same way the original was. Signals keep
-//    the schedule they were created with.
+// 2. Its searches run again, each on its own repeat (hourly, daily, weekly,
+//    every two weeks), as a new run handed to the agent the same way the
+//    original was. A signal keeps the schedule set on it.
 // 3. New people without an email are looked up, emails only, at most the
 //    list's daily cap per UTC day. With no cap set the cap is what the
 //    campaigns reading the list take a day, so lookups follow demand.
@@ -18,13 +18,14 @@ import { get, query, run } from "./db.js";
 import { dispatchRun, RUN_SELECT, STALE_AFTER } from "./runs.js";
 import type { AgentEnv } from "./agent.js";
 
-export const REFRESH = ["hourly", "daily", "weekly", "off"] as const;
+export const REFRESH = ["hourly", "daily", "weekly", "biweekly", "off"] as const;
 export type Refresh = (typeof REFRESH)[number];
 
 const INTERVAL_MS: Record<Exclude<Refresh, "off">, number> = {
   hourly: 60 * 60 * 1000,
   daily: 24 * 60 * 60 * 1000,
   weekly: 7 * 24 * 60 * 60 * 1000,
+  biweekly: 14 * 24 * 60 * 60 * 1000,
 };
 
 /** Rows per bulk insert: 50 ids plus the list's own few, under D1's 100 bound parameters. */
@@ -45,7 +46,7 @@ export interface ListRow {
   updated_at: string;
 }
 
-/** When a list's searches run next: one interval after `from`, or never. */
+/** When a search runs next: one interval after `from`, or never. */
 export function nextRefresh(refresh: string, from: Date): string | null {
   const ms = INTERVAL_MS[refresh as Exclude<Refresh, "off">];
   return ms ? new Date(from.getTime() + ms).toISOString() : null;
@@ -312,7 +313,7 @@ export async function lookUpEmails(env: ListsEnv, origin: string, listId: string
     }
   }
   // People still waiting? With today's lookups used up, look again just after
-  // midnight UTC, whatever the list's refresh cadence. With some left (a cap
+  // midnight UTC, whatever its searches' repeat. With some left (a cap
   // above one batch), carry on with the next slice now.
   const left = await get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM list_members m JOIN leads l ON l.id = m.lead_id
@@ -379,11 +380,41 @@ export function refreshHold(last: RefreshRun | null): "working" | "failed" | "st
 }
 
 /**
+ * Lists used to have one schedule for all their searches. Each search now has
+ * its own, so a search attached before that takes its list's: the same
+ * cadence and the same next run. Only rows saved before (refresh is null);
+ * every search attached since is saved with its own. One cheap statement that
+ * changes nothing once done, so it runs before reads and ticks instead of as
+ * a one-off migration, which a template's schema.sql cannot hold.
+ */
+export async function adoptListRefresh(): Promise<void> {
+  await run(
+    `UPDATE list_sources SET
+        refresh = COALESCE((SELECT l.refresh FROM lists l WHERE l.id = list_sources.list_id), 'off'),
+        next_refresh_at = (SELECT CASE WHEN l.refresh = 'off' THEN NULL ELSE COALESCE(l.next_refresh_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) END
+                             FROM lists l WHERE l.id = list_sources.list_id),
+        last_refreshed_at = (SELECT l.last_refreshed_at FROM lists l WHERE l.id = list_sources.list_id)
+      WHERE kind = 'search' AND refresh IS NULL`,
+  );
+}
+
+/** When the soonest of a list's searches runs again, or null when none repeats. */
+export async function nextDue(listId: string): Promise<string | null> {
+  const row = await get<{ at: string | null }>(
+    `SELECT MIN(next_refresh_at) AS at FROM list_sources
+      WHERE list_id = ? AND kind = 'search' AND refresh != 'off' AND next_refresh_at IS NOT NULL`,
+    [listId],
+  );
+  return row?.at ?? null;
+}
+
+/**
  * Runs a list's searches again: a new run per search, with the same
- * description, handed to the agent the way the original was. On schedule the
- * list is claimed first (the due time moves in the same statement), so two
- * ticks at once refresh it once. `force` is Refresh now: it also retries a
- * search held by a failed or stalled re-run.
+ * description, handed to the agent the way the original was. On schedule
+ * only the searches that are due run, and each is claimed first (its due time
+ * moves in the same statement), so two ticks at once run it once. `force` is
+ * Run now: it runs them whatever their schedule (only `searchId`, when given),
+ * and also retries one held by a failed or stalled re-run.
  *
  * Re-runs never start enrichment themselves: the list's capped lookups buy the
  * emails, so a search set to include emails cannot spend past the cap.
@@ -394,27 +425,36 @@ export async function refreshList(
   listId: string,
   now = new Date(),
   force = false,
+  searchId?: string,
 ): Promise<{ claimed: boolean; started: number; failed: number }> {
-  const list = await get<ListRow>("SELECT * FROM lists WHERE id = ?", [listId]);
+  const list = await get<{ id: string }>("SELECT id FROM lists WHERE id = ?", [listId]);
   if (!list) return { claimed: false, started: 0, failed: 0 };
+  await adoptListRefresh();
   const at = now.toISOString();
-  const next = nextRefresh(list.refresh, now);
-  const claim = force
-    ? await run("UPDATE lists SET last_refreshed_at = ?, next_refresh_at = ?, updated_at = datetime('now') WHERE id = ?", [at, next, listId])
-    : await run(
-        `UPDATE lists SET last_refreshed_at = ?, next_refresh_at = ?, updated_at = datetime('now')
-          WHERE id = ? AND refresh != 'off' AND next_refresh_at IS NOT NULL AND next_refresh_at <= ?`,
-        [at, next, listId, at],
-      );
-  if (claim.changes === 0) return { claimed: false, started: 0, failed: 0 };
-
+  let claimed = false;
   let started = 0;
   let failed = 0;
-  const searches = await query<{ source_id: string }>(
-    "SELECT source_id FROM list_sources WHERE list_id = ? AND kind = 'search' ORDER BY added_at, source_id",
+  const searches = await query<{ source_id: string; refresh: string | null }>(
+    "SELECT source_id, refresh FROM list_sources WHERE list_id = ? AND kind = 'search' ORDER BY added_at, source_id",
     [listId],
   );
-  for (const { source_id } of searches) {
+  for (const { source_id, refresh } of searches) {
+    if (searchId && source_id !== searchId) continue;
+    // Its schedule counts from now, whether it ran on time or by hand.
+    const next = nextRefresh(refresh ?? "off", now);
+    const claim = force
+      ? await run(
+          "UPDATE list_sources SET last_refreshed_at = ?, next_refresh_at = ? WHERE list_id = ? AND kind = 'search' AND source_id = ?",
+          [at, next, listId, source_id],
+        )
+      : await run(
+          `UPDATE list_sources SET last_refreshed_at = ?, next_refresh_at = ?
+            WHERE list_id = ? AND kind = 'search' AND source_id = ?
+              AND refresh != 'off' AND next_refresh_at IS NOT NULL AND next_refresh_at <= ?`,
+          [at, next, listId, source_id, at],
+        );
+    if (claim.changes === 0) continue;
+    claimed = true;
     // The original search may itself still be working.
     const original = await get<{ status: string; stale: number }>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, source_id]);
     if (!original) continue;
@@ -431,8 +471,12 @@ export async function refreshList(
     if ((await dispatchRun(env, origin, id)).ok) started++;
     else failed++;
   }
-  if (next) await bookTick(env, origin, listId, new Date(next));
-  return { claimed: true, started, failed };
+  if (claimed) {
+    await run("UPDATE lists SET updated_at = datetime('now') WHERE id = ?", [listId]);
+    const due = await nextDue(listId);
+    if (due) await bookTick(env, origin, listId, new Date(due));
+  }
+  return { claimed, started, failed };
 }
 
 // ── The tick ────────────────────────────────────────────────────────
@@ -461,30 +505,22 @@ export async function bookTick(env: ListsEnv, origin: string, listId: string, wh
 const OVERDUE_MS = 10 * 60 * 1000;
 
 /**
- * A list whose refresh is long overdue lost its tick: a booking failed, or a
+ * A list whose searches are long overdue lost its tick: a booking failed, or a
  * delivery ran out of attempts while the app was down. Reading the list books
  * one now. Campaigns read their lists every hour, so a list that is being read
  * can't stop refreshing without anyone noticing. Best effort.
  */
-export async function rearmIfOverdue(
-  env: ListsEnv,
-  origin: string,
-  list: Pick<ListRow, "id" | "refresh" | "next_refresh_at">,
-  now = new Date(),
-): Promise<void> {
-  if (list.refresh === "off" || !list.next_refresh_at) return;
-  if (now.getTime() - Date.parse(list.next_refresh_at) < OVERDUE_MS) return;
-  await bookTick(env, origin, list.id, now);
+export async function rearmIfOverdue(env: ListsEnv, origin: string, listId: string, now = new Date()): Promise<void> {
+  const due = await nextDue(listId);
+  if (!due || now.getTime() - Date.parse(due) < OVERDUE_MS) return;
+  await bookTick(env, origin, listId, now);
 }
 
-/** One tick: refresh when it is due, then look up what the cap allows. */
+/** One tick: run the searches that are due, then look up what the cap allows. */
 export async function tick(env: ListsEnv, origin: string, listId: string, now = new Date()): Promise<{ refreshed: boolean; lookups: number }> {
-  const list = await get<ListRow>("SELECT * FROM lists WHERE id = ?", [listId]);
+  const list = await get<{ id: string }>("SELECT id FROM lists WHERE id = ?", [listId]);
   if (!list) return { refreshed: false, lookups: 0 };
-  let refreshed = false;
-  if (list.next_refresh_at && Date.parse(list.next_refresh_at) <= now.getTime()) {
-    refreshed = (await refreshList(env, origin, listId, now)).claimed;
-  }
+  const refreshed = (await refreshList(env, origin, listId, now)).claimed;
   const lookups = await lookUpEmails(env, origin, listId, now);
   return { refreshed, lookups };
 }

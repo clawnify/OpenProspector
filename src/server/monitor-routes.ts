@@ -16,7 +16,7 @@ class InputError extends Error { constructor(message: string, readonly status: 4
 const UUID = z.string().uuid();
 const Page = z.coerce.number().int().min(1).max(40000).default(1);
 const LIMIT = 25;
-const INTERVAL = { daily: 86400000, weekly: 604800000 };
+const INTERVAL = { daily: 86400000, weekly: 604800000, biweekly: 1209600000 };
 
 async function readMonitor(id: string) {
   const row = await get<MonitorRow>("SELECT * FROM signal_monitors WHERE id = ?", [UUID.parse(id)]);
@@ -31,6 +31,11 @@ async function present(row: MonitorRow): Promise<Monitor> {
   // while it feeds a list: the form reads this to show what it does now.
   const lists_fed = (await listsFedBy("signal", row.id)).length;
   return { ...rest, ...config(row), active: Boolean(row.active), last_check: last_check ?? null, lists_fed };
+}
+/** One signal as the app shows it, or null when it no longer exists. */
+export async function monitorView(id: string): Promise<Monitor | null> {
+  const row = await get<MonitorRow>("SELECT * FROM signal_monitors WHERE id = ?", [id]);
+  return row ? present(row) : null;
 }
 async function readCheck(id: string) {
   const check = await get<Check>("SELECT * FROM signal_checks WHERE id = ?", [UUID.parse(id)]);
@@ -108,10 +113,15 @@ monitorRoutes.get("/api/signal-agents", async c => {
   const selected = await get<{ server_id: string }>("SELECT server_id FROM agent_config WHERE id = 1");
   return c.json({ ...data, selected: selected?.server_id ?? null });
 });
+/** `?unlisted=true`: only the signals that feed no list, whose findings wait for a person (To review). */
+const UNLISTED = "NOT EXISTS (SELECT 1 FROM list_sources s WHERE s.kind = 'signal' AND s.source_id = %s)";
+const unlisted = (c: { req: { query: (k: string) => string | undefined } }, column: string) =>
+  c.req.query("unlisted") === "true" ? UNLISTED.replace("%s", column) : "1 = 1";
 monitorRoutes.get("/api/monitors", async c => {
   const page = Page.parse(c.req.query("page"));
-  const rows = await query<MonitorRow>("SELECT * FROM signal_monitors ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?", [LIMIT, (page - 1) * LIMIT]);
-  const count = await get<{ total: number }>("SELECT COUNT(*) total FROM signal_monitors");
+  const where = unlisted(c, "signal_monitors.id");
+  const rows = await query<MonitorRow>(`SELECT * FROM signal_monitors WHERE ${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, [LIMIT, (page - 1) * LIMIT]);
+  const count = await get<{ total: number }>(`SELECT COUNT(*) total FROM signal_monitors WHERE ${where}`);
   return c.json({ monitors: await Promise.all(rows.map(present)), total: count?.total ?? 0, page, limit: LIMIT });
 });
 monitorRoutes.post("/api/monitors", async c => {
@@ -247,7 +257,7 @@ const CheckSchema = z.object({
   id: z.string(), monitor_id: z.string(), status: z.string(), baseline: z.number(),
   error: z.string(), coverage: z.string(), created_at: z.string(), updated_at: z.string(),
 });
-const MonitorSchema = MonitorInput.innerType().extend({
+export const MonitorSchema = MonitorInput.innerType().extend({
   id: z.string(), active: z.boolean(), schedule_id: z.string().nullable(),
   schedule_error: z.string().nullable(), created_at: z.string(),
   last_check: CheckSchema.pick({ id: true, status: true, error: true, updated_at: true, coverage: true }).nullable(),
@@ -356,10 +366,20 @@ function finding({ details, search_id, search_status, search_error, search_lead_
   const search = search_id ? { id: search_id, status: search_status, error: search_error ?? "", lead_count: search_lead_count, stale: search_stale } : null;
   return { ...row, ...JSON.parse(details), search } as Observation;
 }
+/**
+ * `?review=true`: the findings waiting for a person (To review). Those of a
+ * signal in no list, and the companies of a signal set not to find who to
+ * contact that nobody has searched yet: in a list or not, they wait for Find people.
+ */
+const WAITING = `(${UNLISTED.replace("%s", "o.monitor_id")}
+  OR (json_extract(o.details, '$.subject.type') = 'company'
+      AND json_extract((SELECT m.config FROM signal_monitors m WHERE m.id = o.monitor_id), '$.find_contacts') = 0
+      AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.company_domain = json_extract(o.details, '$.subject.domain'))))`;
 monitorRoutes.get("/api/monitor-observations", async c => {
   const page = Page.parse(c.req.query("page"));
-  const rows = await query<ObservationRow & SearchColumns>(`${FINDINGS} WHERE o.visible = 1 ORDER BY o.observed_at DESC, o.rowid DESC LIMIT ? OFFSET ?`, [STALE_AFTER, LIMIT, (page - 1) * LIMIT]);
-  const count = await get<{ total: number }>("SELECT COUNT(*) total FROM signal_observations WHERE visible = 1");
+  const where = c.req.query("review") === "true" ? WAITING : "1 = 1";
+  const rows = await query<ObservationRow & SearchColumns>(`${FINDINGS} WHERE o.visible = 1 AND ${where} ORDER BY o.observed_at DESC, o.rowid DESC LIMIT ? OFFSET ?`, [STALE_AFTER, LIMIT, (page - 1) * LIMIT]);
+  const count = await get<{ total: number }>(`SELECT COUNT(*) total FROM signal_observations o WHERE o.visible = 1 AND ${where}`);
   return c.json({ observations: rows.map(finding), total: count?.total ?? 0, page, limit: LIMIT });
 });
 /** Whether a finding is about a person, the only kind that can become a lead. */
@@ -384,7 +404,7 @@ export async function promoteObservation(observationId: string, details: string)
   const leadId = existing?.id ?? `${isLinkedin ? "linkedin" : "person"}-${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("")}`;
   await run(`INSERT INTO leads(id, full_name, linkedin_url, company, domain, source, source_url, evidence)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
-    "kind" in data ? [leadId, person!.name, isLinkedin ? profile : "", "", "", "custom", data.source_url,
+    "kind" in data ? [leadId, person!.name, isLinkedin ? profile : "", person!.company ?? "", person!.domain ?? "", "custom", data.source_url,
       `Profile: ${person!.profile_url}\n${data.summary}\nSignal reason: ${data.reason}`] :
     [leadId, data.person_name, profile, data.company, normalizeDomain(data.domain), "linkedin", data.source_url,
       `${data.engagement}: ${data.quote}\nICP fit: ${data.why_fit}\nContext: ${data.outreach_context}`]);

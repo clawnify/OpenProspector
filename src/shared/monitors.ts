@@ -26,7 +26,7 @@ export const MonitorInput = z.object({
   source: z.string().trim().min(3).max(2500),
   icp: z.string().trim().max(1000).default(""),
   server_id: z.string().uuid(),
-  frequency: z.enum(["once", "daily", "weekly"]),
+  frequency: z.enum(["once", "daily", "weekly", "biweekly"]),
   include_existing: z.boolean(),
   ends_at: z.string().datetime().nullable(),
   /** New findings a check may record; the rest wait for the next check. */
@@ -117,7 +117,10 @@ const CompanyDomain = z.string().trim().toLowerCase().max(253)
 export const CustomObservationInput = z.object({
   kind: z.literal("custom"),
   subject: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("person"), name: z.string().trim().min(1).max(200), profile_url: WebUrl }).strict(),
+    // Company and domain are what an email lookup needs; without them the
+    // person becomes a lead nobody can find an address for.
+    z.object({ type: z.literal("person"), name: z.string().trim().min(1).max(200), profile_url: WebUrl,
+      company: z.string().trim().max(200).optional(), domain: CompanyDomain.optional() }).strict(),
     z.object({ type: z.literal("company"), name: z.string().trim().min(1).max(200), domain: CompanyDomain }).strict(),
   ]),
   source_url: WebUrl,

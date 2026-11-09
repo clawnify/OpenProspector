@@ -146,12 +146,13 @@ describe("the list contract", () => {
   });
 
   it("lists carry the fields other apps read", async () => {
+    // A list has no schedule of its own: a refresh sent with it is left out.
     const created = await newList({ refresh: "weekly" });
     const { lists, total, page, limit } = await ok("/api/lists");
     expect({ total, page, limit }).toEqual({ total: 1, page: 1, limit: 25 });
     expect(lists[0]).toMatchObject({
-      id: created.id, name: "Dutch builders", refresh: "weekly", member_count: 0, verified_count: 0,
-      email_daily_cap: null, effective_daily_cap: 0,
+      id: created.id, name: "Dutch builders", refresh: "off", source_count: 0, member_count: 0, verified_count: 0,
+      email_daily_cap: null, effective_daily_cap: 0, next_refresh_at: null,
     });
     expect(typeof lists[0].created_at).toBe("string");
   });
@@ -600,47 +601,71 @@ describe("a company's inbox", () => {
   });
 });
 
-describe("refresh", () => {
-  it("books the list's next refresh on the queue, one interval out", async () => {
+describe("each search's own repeat", () => {
+  const attach = (listId: string, searchId: string, refresh?: string) =>
+    ok(`/api/lists/${listId}/sources`, { method: "POST", body: { kind: "search", source_id: searchId, ...(refresh ? { refresh } : {}) } });
+  const due = (listId: string) =>
+    db.prepare("UPDATE list_sources SET next_refresh_at = '2020-01-01T00:00:00.000Z' WHERE list_id = ? AND kind = 'search'").run(listId);
+  const tickNow = (listId: string) => deliver({ targetUrl: "https://prospector.example/api/jobs/list-tick", payload: { listId } });
+
+  it("a search attached with a repeat books the list's next tick one interval out; a list alone books nothing", async () => {
+    const list = await newList();
+    expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
     const before = Date.now();
-    const list = await newList({ refresh: "hourly" });
+    await attach(list.id, (await newSearch()).id, "hourly");
     const tick = jobsFor("/api/jobs/list-tick");
     expect(tick).toHaveLength(1);
     expect(tick[0].payload).toEqual({ listId: list.id });
     const at = Date.parse(tick[0].runAt!);
     expect(at - before).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
     expect(at - before).toBeLessThanOrEqual(60 * 60 * 1000 + 5000);
-    expect(list.next_refresh_at).toBe(tick[0].runAt);
-    // Off books nothing.
+    const detail = await ok(`/api/lists/${list.id}`);
+    expect(detail.list).toMatchObject({ refresh: "hourly", source_count: 1, next_refresh_at: tick[0].runAt });
+    expect(detail.sources[0]).toMatchObject({ kind: "search", refresh: "hourly", next_refresh_at: tick[0].runAt, search_source: "icp" });
+    // Attached without one, a search runs once: nothing booked.
     jobs.length = 0;
-    await newList({ refresh: "off" });
+    const once = await newSearch("Dutch installers");
+    await attach(list.id, once.id);
     expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
+    expect((await ok(`/api/lists/${list.id}`)).sources.find((s: any) => s.source_id === once.id)).toMatchObject({ refresh: "off", next_refresh_at: null });
   });
 
-  it("a due tick runs each search again, to the agent, and its leads join the list", async () => {
-    const list = await newList({ refresh: "daily" });
-    const search = await newSearch();
-    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
-    db.prepare("UPDATE lists SET next_refresh_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(list.id);
-    const r = await deliver(jobsFor("/api/jobs/list-tick")[0]);
+  it("every two weeks is fourteen days", async () => {
+    const list = await newList();
+    const before = Date.now();
+    await attach(list.id, (await newSearch()).id, "biweekly");
+    const at = Date.parse(jobsFor("/api/jobs/list-tick")[0].runAt!);
+    expect(Math.round((at - before) / (24 * 60 * 60 * 1000))).toBe(14);
+  });
+
+  it("a due tick runs only the searches that are due, to the agent, and their leads join the list", async () => {
+    const list = await newList();
+    const daily = await newSearch();
+    const weekly = await newSearch("Dutch installers");
+    await attach(list.id, daily.id, "daily");
+    await attach(list.id, weekly.id, "weekly");
+    db.prepare("UPDATE list_sources SET next_refresh_at = '2020-01-01T00:00:00.000Z' WHERE source_id = ?").run(daily.id);
+    const r = await tickNow(list.id);
     expect(r.body).toMatchObject({ ok: true, refreshed: true });
-    const rerun = row("SELECT * FROM runs WHERE refresh_of = ?", search.id);
-    expect(rerun).toMatchObject({ icp_prompt: search.icp_prompt, status: "sourcing", auto_enrich: 0 });
+    const rerun = row("SELECT * FROM runs WHERE refresh_of = ?", daily.id);
+    expect(rerun).toMatchObject({ icp_prompt: daily.icp_prompt, status: "sourcing", auto_enrich: 0 });
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE refresh_of = ?", weekly.id).n).toBe(0);
     expect(agentCalls.filter((u) => u.endsWith("/tasks"))).toHaveLength(1);
-    // The next one is booked a day out.
-    const next = row("SELECT next_refresh_at FROM lists WHERE id = ?", list.id).next_refresh_at;
+    // Its next run is a day out, and the list's tick is booked for the soonest search.
+    const next = row("SELECT next_refresh_at FROM list_sources WHERE source_id = ?", daily.id).next_refresh_at;
     expect(Date.parse(next) - Date.now()).toBeGreaterThan(23 * 60 * 60 * 1000);
-    // Booked to the minute: the tick booked when the list was made covers this one.
     expect(jobsFor("/api/jobs/list-tick").some((j) => j.runAt!.slice(0, 16) === next.slice(0, 16))).toBe(true);
     await post(rerun.id, [ana]);
-    expect(row("SELECT source_id FROM list_members WHERE list_id = ?", list.id).source_id).toBe(search.id);
+    expect(row("SELECT source_id FROM list_members WHERE list_id = ?", list.id).source_id).toBe(daily.id);
   });
 
   it("a list whose tick was lost gets one when it is read, as its campaigns do hourly", async () => {
-    const list = await newList({ refresh: "daily" });
+    const list = await newList();
+    await attach(list.id, (await newSearch()).id, "daily");
     const at = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const setNext = (value: string) => db.prepare("UPDATE list_sources SET next_refresh_at = ? WHERE list_id = ?").run(value, list.id);
     jobs.length = 0;
-    db.prepare("UPDATE lists SET next_refresh_at = ? WHERE id = ?").run(at(60 * 60 * 1000), list.id);
+    setNext(at(60 * 60 * 1000));
     await ok(`/api/lists/${list.id}/members?email_verified=true`, { headers: APP });
     const tick = jobsFor("/api/jobs/list-tick");
     expect(tick).toHaveLength(1);
@@ -648,66 +673,132 @@ describe("refresh", () => {
     expect(Date.parse(tick[0].runAt!)).toBeLessThanOrEqual(Date.now());
     // Due a minute ago is not lost: its own tick is on its way.
     jobs.length = 0;
-    db.prepare("UPDATE lists SET next_refresh_at = ? WHERE id = ?").run(at(60 * 1000), list.id);
+    setNext(at(60 * 1000));
     await ok("/api/lists", { headers: APP });
     expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
-    // A list set to off has nothing to re-arm.
-    db.prepare("UPDATE lists SET refresh = 'off', next_refresh_at = ? WHERE id = ?").run(at(24 * 60 * 60 * 1000), list.id);
+    // A search set to run once has nothing to re-arm.
+    db.prepare("UPDATE list_sources SET refresh = 'off', next_refresh_at = ? WHERE list_id = ?").run(at(24 * 60 * 60 * 1000), list.id);
     await ok(`/api/lists/${list.id}`, { headers: APP });
     expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
   });
 
-  it("a tick that is not due, and a list set to off, change nothing", async () => {
-    const list = await newList({ refresh: "daily" });
+  it("a tick that is not due, and a search set to run once, change nothing", async () => {
+    const list = await newList();
     const search = await newSearch();
-    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    await attach(list.id, search.id, "daily");
     expect((await deliver(jobsFor("/api/jobs/list-tick")[0])).body.refreshed).toBe(false);
-    await ok(`/api/lists/${list.id}`, { method: "PATCH", body: { refresh: "off" } });
-    expect(row("SELECT next_refresh_at FROM lists WHERE id = ?", list.id).next_refresh_at).toBeNull();
+    const r = await ok(`/api/lists/${list.id}/sources/search/${search.id}`, { method: "PATCH", body: { refresh: "off" } });
+    expect(r.source).toMatchObject({ refresh: "off", next_refresh_at: null });
+    due(list.id);
+    expect((await tickNow(list.id)).body.refreshed).toBe(false);
     expect(row("SELECT COUNT(*) AS n FROM runs WHERE refresh_of IS NOT NULL").n).toBe(0);
   });
 
-  it("a failed or stalled re-run holds the search until Refresh now; one still working is left alone", async () => {
-    const list = await newList({ refresh: "hourly" });
+  it("a new repeat counts from now and books its tick; a signal's schedule is set on the signal", async () => {
+    const list = await newList();
     const search = await newSearch();
-    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
-    const due = () => db.prepare("UPDATE lists SET next_refresh_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(list.id);
-    const tickNow = () => deliver({ targetUrl: "https://prospector.example/api/jobs/list-tick", payload: { listId: list.id } });
+    await attach(list.id, search.id);
+    const before = Date.now();
+    await ok(`/api/lists/${list.id}/sources/search/${search.id}`, { method: "PATCH", body: { refresh: "weekly" } });
+    const tick = jobsFor("/api/jobs/list-tick");
+    expect(tick).toHaveLength(1);
+    expect(Math.round((Date.parse(tick[0].runAt!) - before) / (24 * 60 * 60 * 1000))).toBe(7);
+    // Not a search in this list, an unknown repeat, or a list-wide one: refused.
+    expect((await request(`/api/lists/${list.id}/sources/search/${crypto.randomUUID()}`, { method: "PATCH", body: { refresh: "daily" } })).status).toBe(404);
+    expect((await request(`/api/lists/${list.id}/sources/search/${search.id}`, { method: "PATCH", body: { refresh: "monthly" } })).status).toBe(400);
+    expect((await request(`/api/lists/${list.id}`, { method: "PATCH", body: { refresh: "daily" } })).status).toBe(400);
+    const monitor = await newMonitor();
+    const r = await request(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor, refresh: "daily" } });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("its own schedule");
+  });
+
+  it("Run now runs one search whatever its schedule, and only that one", async () => {
+    const list = await newList();
+    const one = await newSearch();
+    const other = await newSearch("Dutch installers");
+    await attach(list.id, one.id);
+    await attach(list.id, other.id);
+    const r = await request(`/api/lists/${list.id}/sources/search/${one.id}/run`, { method: "POST" });
+    expect(r.status).toBe(202);
+    expect(r.body).toEqual({ started: 1, failed: 0 });
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE refresh_of = ?", one.id).n).toBe(1);
+    expect(row("SELECT COUNT(*) AS n FROM runs WHERE refresh_of = ?", other.id).n).toBe(0);
+    expect((await request(`/api/lists/${list.id}/sources/search/${crypto.randomUUID()}/run`, { method: "POST" })).status).toBe(404);
+    expect((await request(`/api/lists/${list.id}/sources/search/${one.id}/run`, { method: "POST", headers: APP })).status).toBe(403);
+  });
+
+  it("a failed or stalled re-run holds the search until Run now; one still working is left alone", async () => {
+    const list = await newList();
+    const search = await newSearch();
+    await attach(list.id, search.id, "hourly");
     const reruns = () => row("SELECT COUNT(*) AS n FROM runs WHERE refresh_of = ?", search.id).n;
 
-    due();
-    await tickNow();
+    due(list.id);
+    await tickNow(list.id);
     expect(reruns()).toBe(1);
     // Still working: the next tick leaves it be.
-    due();
-    await tickNow();
+    due(list.id);
+    await tickNow(list.id);
     expect(reruns()).toBe(1);
     // Failed: held, and the list says so.
     db.prepare("UPDATE runs SET status = 'failed', error = 'Login required' WHERE refresh_of = ?").run(search.id);
-    due();
-    await tickNow();
+    due(list.id);
+    await tickNow(list.id);
     expect(reruns()).toBe(1);
     const detail = await ok(`/api/lists/${list.id}`);
     expect(detail.sources[0]).toMatchObject({ kind: "search", hold: "failed", last_refresh: { status: "failed", error: "Login required" } });
-    // Refresh now retries it.
+    // Running every search now retries it.
     const now = await ok(`/api/lists/${list.id}/refresh`, { method: "POST" });
     expect(now.started).toBe(1);
     expect(reruns()).toBe(2);
     // Stalled: held too.
     db.prepare("UPDATE runs SET status = 'sourcing', updated_at = datetime('now', '-2 hours') WHERE refresh_of = ?").run(search.id);
-    due();
-    await tickNow();
+    due(list.id);
+    await tickNow(list.id);
     expect(reruns()).toBe(2);
     expect((await ok(`/api/lists/${list.id}`)).sources[0].hold).toBe("stalled");
+  });
+
+  it("a search attached before searches had their own repeat takes its list's, once, and keeps its next run", async () => {
+    // How a list saved by the previous release looks: one schedule on the list, none on its search.
+    const listId = crypto.randomUUID();
+    const search = await newSearch();
+    const signal = await newMonitor();
+    db.prepare("INSERT INTO lists (id, name, refresh, next_refresh_at, last_refreshed_at) VALUES (?, 'Old list', 'weekly', '2031-01-01T00:00:00.000Z', '2030-12-25T00:00:00.000Z')").run(listId);
+    db.prepare("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, 'search', ?), (?, 'signal', ?)").run(listId, search.id, listId, signal);
+    const offId = crypto.randomUUID();
+    const offSearch = await newSearch("Dutch installers");
+    db.prepare("INSERT INTO lists (id, name, refresh, next_refresh_at) VALUES (?, 'Off list', 'off', NULL)").run(offId);
+    db.prepare("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, 'search', ?)").run(offId, offSearch.id);
+
+    const detail = await ok(`/api/lists/${listId}`);
+    expect(detail.list).toMatchObject({ refresh: "weekly", next_refresh_at: "2031-01-01T00:00:00.000Z", last_refreshed_at: "2030-12-25T00:00:00.000Z" });
+    expect(detail.sources.find((s: any) => s.kind === "search")).toMatchObject({ refresh: "weekly", next_refresh_at: "2031-01-01T00:00:00.000Z" });
+    expect(row("SELECT refresh, next_refresh_at FROM list_sources WHERE kind = 'signal'")).toEqual({ refresh: null, next_refresh_at: null });
+    expect((await ok(`/api/lists/${offId}`)).sources[0]).toMatchObject({ refresh: "off", next_refresh_at: null });
+    // Once: a repeat changed afterwards stays changed.
+    await ok(`/api/lists/${listId}/sources/search/${search.id}`, { method: "PATCH", body: { refresh: "daily" } });
+    expect((await ok("/api/lists")).lists.find((l: any) => l.id === listId).refresh).toBe("daily");
+  });
+
+  it("a list fed only by signals runs nothing on its ticks and books no next one", async () => {
+    const listId = crypto.randomUUID();
+    db.prepare("INSERT INTO lists (id, name, refresh, next_refresh_at) VALUES (?, 'Signals only', 'daily', '2020-01-01T00:00:00.000Z')").run(listId);
+    db.prepare("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, 'signal', ?)").run(listId, await newMonitor());
+    jobs.length = 0;
+    expect((await tickNow(listId)).body.refreshed).toBe(false);
+    expect(jobsFor("/api/jobs/list-tick")).toHaveLength(0);
+    expect((await ok(`/api/lists/${listId}`)).list).toMatchObject({ refresh: "off", next_refresh_at: null });
   });
 });
 
 describe("a refresh the agent refuses", () => {
   it("is counted as failed, not started, and holds the search as undelivered", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "agent_server_not_ready", detail: "status=error" }, { status: 503 })));
-    const list = await newList({ refresh: "daily" });
+    const list = await newList();
     const search = await newSearch();
-    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id, refresh: "daily" } });
     const r = await ok(`/api/lists/${list.id}/refresh`, { method: "POST" });
     expect(r).toMatchObject({ started: 0, failed: 1 });
     const source = (await ok(`/api/lists/${list.id}`)).sources[0];
@@ -789,3 +880,69 @@ describe("automatic email lookups", () => {
     expect(bought).toEqual(["email", "phone"]);
   });
 });
+
+describe("what a list shows", () => {
+  it("a signal source carries the whole signal, so it can be run, paused and edited from the list", async () => {
+    const list = await newList();
+    const monitor = await newMonitor({ ...vansSignal, finds: "companies", max_per_check: 5 });
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    const source = (await ok(`/api/lists/${list.id}`)).sources[0];
+    expect(source).toMatchObject({ kind: "signal", name: "Vans in Amsterdam", frequency: "once", active: true });
+    expect(source.monitor).toMatchObject({ id: monitor, kind: "custom", finds: "companies", max_per_check: 5, lists_fed: 1 });
+    expect(source.refresh).toBeUndefined();
+  });
+
+  it("each lead says what found it", async () => {
+    const list = await newList();
+    const search = await newSearch();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "search", source_id: search.id } });
+    await post(search.id, [ana]);
+    const monitor = await newMonitor();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    const check = await beginCheck(monitor);
+    await ok(`/api/monitor-checks/${check.id}/observations`, { method: "POST", body: { observations: [finding] } });
+    await post((await newSearch("Someone else")).id, [jan]);
+    await ok(`/api/lists/${list.id}/members`, { method: "POST", body: { lead_ids: [row("SELECT id FROM leads WHERE full_name = 'Jan Smit'").id] } });
+    const { members } = await ok(`/api/lists/${list.id}/members`);
+    // Two can join in the same millisecond, so compared by name, not by order.
+    expect(members.map((m: any) => [m.full_name, m.source_kind, m.source_name]).sort()).toEqual([
+      ["Ana de Vries", "search", search.icp_prompt],
+      ["Jan Smit", "manual", null],
+      ["Piet Jansen", "signal", "Engaged with our posts"],
+    ]);
+  });
+
+  it("To review: the signals that feed no list, and only their findings", async () => {
+    const listed = await newMonitor({ name: "In a list" });
+    const unlisted = await newMonitor({ name: "In no list", source: "https://www.linkedin.com/posts/other_activity-456" });
+    const list = await newList();
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: listed } });
+    const otherPost = "https://www.linkedin.com/posts/other_activity-456";
+    for (const [id, post] of [[listed, monitorConfig.source], [unlisted, otherPost]]) {
+      const check = await beginCheck(id);
+      await ok(`/api/monitor-checks/${check.id}/observations`, { method: "POST", body: { observations: [{ ...finding, post_url: post, source_url: post }] } });
+    }
+    const all = await ok("/api/monitors");
+    const review = await ok("/api/monitors?unlisted=true");
+    expect(all.total).toBe(2);
+    expect(review).toMatchObject({ total: 1, monitors: [expect.objectContaining({ id: unlisted, lists_fed: 0 })] });
+    expect((await ok("/api/monitor-observations")).total).toBe(2);
+    const findings = await ok("/api/monitor-observations?review=true");
+    expect(findings.total).toBe(1);
+    expect(findings.observations[0].monitor_id).toBe(unlisted);
+  });
+
+  it("To review also holds the companies of a signal in a list that is set not to find who to contact, until someone searches them", async () => {
+    const list = await newList();
+    const quiet = await newMonitor({ ...vansSignal, finds: "companies", find_contacts: false });
+    const busy = await newMonitor({ ...vansSignal, name: "Searches its own", finds: "companies", find_contacts: true });
+    for (const id of [quiet, busy]) await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: id } });
+    await ok(`/api/monitor-checks/${(await beginCheck(quiet)).id}/observations`, { method: "POST", body: { observations: [bouwFinding] } });
+    await ok(`/api/monitor-checks/${(await beginCheck(busy)).id}/observations`, { method: "POST", body: { observations: [smitFinding] } });
+    const waiting = await ok("/api/monitor-observations?review=true");
+    expect(waiting.observations.map((o: any) => o.subject.domain)).toEqual(["bouw.nl"]);
+    await ok(`/api/monitor-observations/${waiting.observations[0].id}/search`, { method: "POST" });
+    expect((await ok("/api/monitor-observations?review=true")).total).toBe(0);
+  });
+});
+

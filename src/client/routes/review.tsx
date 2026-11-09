@@ -1,9 +1,11 @@
-// The review surface for signals. The store can dedupe and date things on its
-// own; what it cannot do is decide. So this screen exists to put a live signal
-// in front of a person with the evidence attached, and give them exactly two
-// answers: source it, or say why not.
+// To review: what waits for a person. A search in a list adds what it finds to
+// the list on its own; a search in no list leaves its findings here, with the
+// evidence, until someone adds the person to Leads, finds people at the
+// company, or puts the search in a list. The nav shows this page only when
+// there is something on it.
 //
-// Sorting is the opinion here. Accounts carrying more than one live signal come
+// Below them, company findings from the older signal store (`/api/signals`),
+// shown only when there are any. Sorting is the opinion there. Accounts carrying more than one live signal come
 // first, because one signal is a coincidence, then the freshest. A stale signal
 // is never hidden — a source quietly rotting is something you want to see — but
 // it cannot be sourced, because a run spends enrichment credits.
@@ -11,7 +13,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { CircleAlert, ExternalLink, Layers, RefreshCw } from "lucide-react";
 import { Badge, Button, Chip, Favicon } from "../components/ui";
-import { SignalMonitors, MonitorFindings, Pager } from "../components/signal-monitors";
+import { UnlistedSignals, MonitorFindings, Pager } from "../components/signal-monitors";
+import { PutInList } from "./lists";
 import { api, type Signal } from "../api";
 
 function ageLabel(signal: Signal): string {
@@ -29,7 +32,7 @@ function order(a: Signal, b: Signal): number {
   return aAge - bAge;
 }
 
-function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => void }) {
+function CompanySignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState(false);
@@ -133,11 +136,12 @@ function SignalRow({ signal, onChanged }: { signal: Signal; onChanged: () => voi
   );
 }
 
-export function SignalsRoute() {
+export function ReviewRoute() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const load = useCallback(async () => {
     try {
       const res = await api.signals({ page });
@@ -149,12 +153,22 @@ export function SignalsRoute() {
   useEffect(() => { void load(); }, [load]);
   return (
     <div className="space-y-8 p-6">
-      <SignalMonitors />
+      <p className="max-w-2xl text-sm text-muted-foreground">
+        What waits for you: what searches in no list found, and the companies of searches set not to find who to contact.
+        Add a person to Leads, find people at a company, or put a search in a list: from then on, what it finds joins
+        that list on its own.
+      </p>
+      {notice && (
+        <div role="status" className={`rounded-sm px-3 py-2 text-sm ${notice.tone === "success" ? "bg-success-tint text-success" : "bg-destructive-tint text-destructive"}`}>
+          {notice.text}
+        </div>
+      )}
+      <UnlistedSignals action={(m, reload) => <PutInList monitorId={m.id} onDone={(text, tone) => { setNotice({ tone, text }); reload(); window.dispatchEvent(new Event("review-changed")); }} />} />
       <MonitorFindings />
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {signals.length > 0 && <section aria-label="Company findings">
         <h2 className="card-title">Company findings <span className="text-muted-foreground">{total}</span></h2>
-        {signals.map(s => <SignalRow key={s.id} signal={s} onChanged={load} />)}
+        {signals.map(s => <CompanySignalRow key={s.id} signal={s} onChanged={load} />)}
         <Pager page={page} total={total} onPage={setPage} />
       </section>}
     </div>

@@ -188,6 +188,16 @@ describe("custom person/company signals", () => {
     expect(lead.evidence).toContain(personFinding.reason);
     expect(external).not.toHaveBeenCalled();
   });
+  it("keeps a person's company and domain, which an email lookup needs, and still dedupes on profile and evidence", async () => {
+    const check = await begin(await create({ ...customConfig, finds: "people" }));
+    const withCompany = { ...personFinding, subject: { ...personFinding.subject, company: "Agency BV", domain: "www.Agency.example" } };
+    const r = await record(check.id, [withCompany, personFinding]);
+    expect(r.body.recorded).toBe(1);
+    const [item] = (await request("/api/monitor-observations")).body.observations;
+    await request(`/api/monitor-observations/${item.id}/lead`, "POST");
+    expect(db.prepare("SELECT company, domain FROM leads").get()).toEqual({ company: "Agency BV", domain: "agency.example" });
+    expect((await record(check.id, [{ ...withCompany, subject: { ...withCompany.subject, domain: "https://agency.example/team" } }])).status).toBe(400);
+  });
   it("reuses the same person across custom and LinkedIn findings with a verified LinkedIn identity", async () => {
     const linked = await begin(await create()); await record(linked.id);
     const custom = await begin(await create(customConfig));
@@ -223,6 +233,10 @@ describe("monitor lifecycle", () => {
     const replay = await request("/api/monitors", "POST", { id, ...cfg, frequency: "daily" });
     expect(replay.status).toBe(201);
     expect(external).toHaveBeenCalledTimes(1);
+  });
+  it("schedules every two weeks as fourteen days", async () => {
+    await create({ frequency: "biweekly" });
+    expect(JSON.parse(external.mock.calls[0][1].body).trigger).toEqual({ kind: "every", every_ms: 14 * 86400000 });
   });
   it("keeps uncertain schedule creation recoverable using the same key", async () => {
     const id = crypto.randomUUID();

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { ArrowUp, Check, Copy, PanelLeft, RefreshCw, Upload } from "lucide-react";
 import { AppNav, reportLocation, type AppNavItem } from "@clawnify/app/client";
 import { api, ApiError, type Lead, type Provider, type Run } from "./api";
-import { SignalsRoute } from "./routes/signals";
+import { ReviewRoute } from "./routes/review";
 import { AddToList, ListDetail, ListsIndex } from "./routes/lists";
 import { Badge, Button, Card, CardTitle, Zone } from "./components/ui";
 import { LeadsTable } from "./components/leads-table";
@@ -13,14 +13,26 @@ import { Settings } from "./routes/settings";
 // One definition of the navigation (DESIGN.md → The shell). <AppNav> paints
 // it as this app's own sidebar when opened directly, and hands it to the
 // Clawnify dashboard's sidebar when embedded there.
-const NAV: AppNavItem[] = [
-  // The app opens on leads. This hidden item is what the app's name opens.
-  { id: "home", label: "Leads", href: "/", home: true },
-  { id: "leads", label: "Leads", href: "/", icon: "users", color: "blue" },
-  { id: "signals", label: "Signals", href: "/signals", icon: "activity", color: "amber" },
-  { id: "lists", label: "Lists", href: "/lists", icon: "list", color: "green" },
-  { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
-];
+//
+// Lists are the home: a list holds leads and the searches that fill it. Leads
+// is every lead, from every list and search. To review shows only while
+// something waits there (searches in no list, and what they found).
+function nav(review: boolean): AppNavItem[] {
+  return [
+    // The app opens on its lists. This hidden item is what the app's name opens.
+    { id: "home", label: "Lists", href: "/", home: true },
+    { id: "lists", label: "Lists", href: "/", icon: "list", color: "green" },
+    { id: "leads", label: "Leads", href: "/leads", icon: "users", color: "blue" },
+    ...(review ? [{ id: "review", label: "To review", href: "/review", icon: "inbox", color: "amber" } as AppNavItem] : []),
+    { id: "settings", label: "Settings", href: "/settings", icon: "settings" },
+  ];
+}
+
+/** `/` is Lists now. An old link to one search's leads (`/?run=`) still opens them on Leads. */
+function Home() {
+  const run = new URLSearchParams(useLocation().search).get("run");
+  return run ? <Navigate to={`/leads?run=${encodeURIComponent(run)}`} replace /> : <ListsIndex />;
+}
 
 /** Parse a pasted CSV into lead rows. Header names are matched loosely so a
  *  file exported from any CRM lands without the user renaming columns. */
@@ -290,32 +302,51 @@ export function App() {
   const routerNavigate = useNavigate();
   const active = location.pathname.startsWith("/settings")
     ? "settings"
-    : location.pathname.startsWith("/signals")
-      ? "signals"
-      : location.pathname.startsWith("/lists")
-        ? "lists"
-        : "leads";
+    : location.pathname.startsWith("/review")
+      ? "review"
+      : location.pathname.startsWith("/leads")
+        ? "leads"
+        : "lists";
+
+  // Whether anything waits on To review: a search in no list, a finding
+  // waiting for a person, or an older company finding. Checked on each move, so the item comes and goes with it.
+  const [toReview, setToReview] = useState(false);
+  useEffect(() => {
+    let current = true;
+    const check = () =>
+      Promise.all([api.monitors(1, true), api.observations(1, true), api.signals({ page: 1 })]).then(
+        ([m, o, s]) => current && setToReview(m.total + o.total + s.total > 0),
+        () => {},
+      );
+    void check();
+    window.addEventListener("review-changed", check);
+    return () => {
+      current = false;
+      window.removeEventListener("review-changed", check);
+    };
+  }, [location.pathname]);
 
   // Lets the dashboard restore this exact screen on reload.
   useEffect(() => {
     reportLocation(location.pathname + location.search);
   }, [location.pathname, location.search]);
 
-  // `/?run=<id>` opens Leads on one search, as a signal's "people to contact" link does.
+  // `/leads?run=<id>` opens Leads on one search, as a company's "people to contact" link does.
   useEffect(() => {
+    if (!location.pathname.startsWith("/leads")) return;
     const run = new URLSearchParams(location.search).get("run");
     if (run) {
       setRunFilter(run);
       setPage(1);
     }
-  }, [location.search]);
+  }, [location.pathname, location.search]);
 
   // Filtering the table to a run, or back to every lead. The URL follows, so
   // a reload, or the dashboard restoring this screen, keeps the same view.
   const filterRun = (id: string | null) => {
     setRunFilter(id);
     setPage(1);
-    routerNavigate(id ? `/?run=${encodeURIComponent(id)}` : "/", { replace: true });
+    routerNavigate(id ? `/leads?run=${encodeURIComponent(id)}` : "/leads", { replace: true });
   };
 
   // A company search is no row in Searches, so the filter pill reads it here.
@@ -356,7 +387,7 @@ export function App() {
         <AppNav
           title="OpenProspector"
           icon="target"
-          groups={[{ items: NAV }]}
+          groups={[{ items: nav(toReview || active === "review") }]}
           active={active}
           onNavigate={(item) => routerNavigate(item.href ?? "/")}
         />
@@ -364,19 +395,22 @@ export function App() {
 
       <main className="min-w-0 flex-1 overflow-auto">
         <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/lists" element={<Navigate to="/" replace />} />
+          <Route path="/lists/:id" element={<ListDetail />} />
           <Route
-            path="/signals"
+            path="/review"
             element={
               <div className="flex min-h-full flex-col">
                 <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
-                  <h1 className="text-[1.375rem] font-semibold tracking-[-0.01em]">Signals</h1>
+                  <h1 className="text-[1.375rem] font-semibold tracking-[-0.01em]">To review</h1>
                 </header>
-                <SignalsRoute />
+                <ReviewRoute />
               </div>
             }
           />
-          <Route path="/lists" element={<ListsIndex />} />
-          <Route path="/lists/:id" element={<ListDetail />} />
+          {/* The Signals page became To review; its searches live in their lists. */}
+          <Route path="/signals" element={<Navigate to="/review" replace />} />
           <Route
             path="/settings"
             element={
@@ -389,7 +423,7 @@ export function App() {
             }
           />
           <Route
-            path="*"
+            path="/leads"
             element={
               <div className="flex min-h-full flex-col">
                 <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-6">
@@ -486,6 +520,9 @@ export function App() {
                           </p>
                         </div>
                       )}
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Runs once, and its leads land here. For leads that keep coming, <Link to="/" className="underline hover:text-foreground">add a search to a list</Link>.
+                      </p>
                       <div className="mt-3 flex items-center justify-between gap-3">
                         <label className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-sm px-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
                           <Upload size={16} />
@@ -592,6 +629,7 @@ export function App() {
               </div>
             }
           />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>

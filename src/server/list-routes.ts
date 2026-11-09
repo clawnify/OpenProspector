@@ -5,7 +5,7 @@
 // (an outreach campaign does this; the list's lookups follow it). Adding
 // people by hand is there too.
 //
-// Creating a list, its cadence, attaching sources and Refresh now are control
+// Creating a list, attaching sources, their repeat and Run now are control
 // routes, plain and unpublished like the run dispatch and the monitor
 // controls: a list's searches are handed to the agent, and an agent that
 // learns these routes from discovery could hand work to itself on a schedule.
@@ -18,10 +18,12 @@ import { LeadSchema } from "./lead-schema.js";
 import { RUN_SELECT, STALE_AFTER, STRANDED_AFTER } from "./runs.js";
 import { searchCompanies, unsearchedCompanies } from "./company-search.js";
 import { MonitorInput } from "../shared/monitors.js";
+import { MonitorSchema, monitorView } from "./monitor-routes.js";
 import { INBOX_PARTS, inboxSql } from "../shared/inbox.js";
 import {
   REFRESH,
   addMembers,
+  adoptListRefresh,
   afterJoin,
   backfill,
   bookTick,
@@ -81,14 +83,17 @@ const ListSchema = z
   .object({
     id: z.string(),
     name: z.string(),
-    refresh: z.enum(REFRESH).openapi({ description: "How often its searches run again. Signals keep their own schedule." }),
+    refresh: z.enum(REFRESH).openapi({
+      description: "How often its most frequent search runs again ('off' when none repeats). Each search has its own repeat (sources[].refresh); a signal keeps its own schedule.",
+    }),
+    source_count: z.number().int().openapi({ description: "Searches and signals feeding it" }),
     member_count: z.number().int(),
     verified_count: z.number().int().openapi({ description: "People in the list with a verified email" }),
     email_daily_cap: z.number().int().nullable().openapi({ description: "Automatic email lookups per UTC day. Null: what its readers take a day." }),
     effective_daily_cap: z.number().int().openapi({ description: "The cap in force: email_daily_cap, else the sum of its readers' daily numbers, else 0 (no automatic lookups)" }),
     lookups_today: z.number().int().openapi({ description: "Automatic lookups started this UTC day" }),
-    last_refreshed_at: z.string().nullable(),
-    next_refresh_at: z.string().nullable(),
+    last_refreshed_at: z.string().nullable().openapi({ description: "When one of its searches last ran again" }),
+    next_refresh_at: z.string().nullable().openapi({ description: "When the soonest of its searches runs again; null when none repeats" }),
     created_at: z.string(),
   })
   .openapi("List");
@@ -97,6 +102,7 @@ const MemberSchema = LeadSchema.extend({
   added_at: z.string(),
   source_kind: z.enum(["search", "signal", "manual"]),
   source_id: z.string().openapi({ description: "The search (run id) or signal (monitor id) that added them; empty when added by hand" }),
+  source_name: z.string().nullable().openapi({ description: "The search's description or the signal's name; null when added by hand or since deleted" }),
   email_kind: z.enum(["person", "inbox"]).nullable().openapi({
     description: "inbox: a company's public address (info@, contact@), not a person's: write to it as to the company, with no first name. Null without an email.",
   }),
@@ -118,26 +124,39 @@ const SourceSchema = z
     name: z.string(),
     added_at: z.string(),
     missing: z.boolean().openapi({ description: "The search or signal no longer exists" }),
-    // A search: its latest re-run and whether the schedule holds it.
+    // A search: how often it runs again, its latest re-run and whether the schedule holds it.
+    refresh: z.enum(REFRESH).nullable().optional(),
+    next_refresh_at: z.string().nullable().optional(),
+    search_source: z.enum(["icp", "sales_navigator"]).nullable().optional().openapi({ description: "icp: a described profile. sales_navigator: name holds the export's URL." }),
     last_refresh: z
       .object({ id: z.string(), status: z.string(), error: z.string(), lead_count: z.number().int(), created_at: z.string(), stale: z.number().int() })
       .nullable()
       .optional(),
     hold: z.enum(["working", "failed", "stalled", "undelivered"]).nullable().optional(),
-    // A signal: its own schedule.
+    // A signal: its own schedule, and the whole signal for editing it here.
     frequency: z.string().nullable().optional(),
     active: z.boolean().nullable().optional(),
     schedule_error: z.string().nullable().optional(),
+    monitor: MonitorSchema.nullable().optional(),
   })
   .openapi("ListSource");
 
-interface SummaryRow extends ListRow {
+interface SummaryRow extends Omit<ListRow, "refresh"> {
   member_count: number;
   verified_count: number;
   consumer_daily: number | null;
+  source_count: number;
+  most_often: number | null;
 }
 
-const SUMMARY_SELECT = `l.*,
+// Its searches' schedules, not the list's retired one: the soonest next run,
+// the latest run, and the most frequent repeat (by REFRESH order).
+const SEARCHES = "FROM list_sources s WHERE s.list_id = l.id AND s.kind = 'search'";
+const SUMMARY_SELECT = `l.id, l.name, l.email_daily_cap, l.lookups_day, l.lookups_used, l.created_at, l.updated_at,
+  (SELECT MIN(s.next_refresh_at) ${SEARCHES} AND s.refresh != 'off') AS next_refresh_at,
+  (SELECT MAX(s.last_refreshed_at) ${SEARCHES}) AS last_refreshed_at,
+  (SELECT MIN(CASE s.refresh ${REFRESH.map((r, i) => `WHEN '${r}' THEN ${i}`).join(" ")} END) ${SEARCHES} AND s.refresh != 'off') AS most_often,
+  (SELECT COUNT(*) FROM list_sources s WHERE s.list_id = l.id) AS source_count,
   (SELECT COUNT(*) FROM list_members m WHERE m.list_id = l.id) AS member_count,
   (SELECT COUNT(*) FROM list_members m JOIN leads d ON d.id = m.lead_id WHERE m.list_id = l.id AND d.email_verified = 1) AS verified_count,
   (SELECT SUM(daily) FROM list_consumers k WHERE k.list_id = l.id) AS consumer_daily`;
@@ -147,7 +166,8 @@ function summary(r: SummaryRow, now = new Date()) {
   return {
     id: r.id,
     name: r.name,
-    refresh: r.refresh,
+    refresh: r.most_often === null ? ("off" as const) : REFRESH[r.most_often],
+    source_count: r.source_count,
     member_count: r.member_count,
     verified_count: r.verified_count,
     email_daily_cap: r.email_daily_cap,
@@ -160,14 +180,15 @@ function summary(r: SummaryRow, now = new Date()) {
 }
 
 async function readList(id: string) {
+  await adoptListRefresh();
   const row = await get<SummaryRow>(`SELECT ${SUMMARY_SELECT} FROM lists l WHERE l.id = ?`, [ListId.parse(id)]);
   if (!row) throw new InputError("List not found", 404);
   return row;
 }
 
 async function sourcesOf(listId: string) {
-  const rows = await query<{ kind: "search" | "signal"; source_id: string; added_at: string }>(
-    "SELECT kind, source_id, added_at FROM list_sources WHERE list_id = ? ORDER BY added_at, source_id",
+  const rows = await query<{ kind: "search" | "signal"; source_id: string; added_at: string; refresh: z.infer<typeof SourceSchema>["refresh"]; next_refresh_at: string | null }>(
+    "SELECT kind, source_id, added_at, refresh, next_refresh_at FROM list_sources WHERE list_id = ? ORDER BY added_at, source_id",
     [listId],
   );
   const out: z.infer<typeof SourceSchema>[] = [];
@@ -176,9 +197,14 @@ async function sourcesOf(listId: string) {
       const search = await get<{ icp_prompt: string; source: string }>(`SELECT ${RUN_SELECT} FROM runs WHERE id = ?`, [STALE_AFTER, s.source_id]);
       const last = await latestRefresh(s.source_id);
       out.push({
-        ...s,
+        kind: s.kind,
+        source_id: s.source_id,
+        added_at: s.added_at,
         name: search ? search.icp_prompt : "Deleted search",
         missing: !search,
+        refresh: s.refresh ?? "off",
+        next_refresh_at: s.next_refresh_at,
+        search_source: search ? (search.source === "sales_navigator" ? "sales_navigator" : "icp") : null,
         last_refresh: last
           ? { id: last.id, status: last.status, error: last.error, lead_count: last.lead_count, created_at: last.created_at, stale: last.stale }
           : null,
@@ -201,12 +227,15 @@ async function sourcesOf(listId: string) {
         }
       }
       out.push({
-        ...s,
+        kind: s.kind,
+        source_id: s.source_id,
+        added_at: s.added_at,
         name,
         missing: !monitor,
         frequency,
         active: monitor ? Boolean(monitor.active) : null,
         schedule_error: monitor?.schedule_error ?? null,
+        monitor: monitor ? await monitorView(s.source_id) : null,
       });
     }
   }
@@ -242,8 +271,9 @@ listRoutes.openapi(
   }),
   async (c) => {
     const { page, limit, offset } = paging(c.req.valid("query"));
+    await adoptListRefresh();
     const rows = await query<SummaryRow>(`SELECT ${SUMMARY_SELECT} FROM lists l ORDER BY l.created_at DESC, l.id LIMIT ? OFFSET ?`, [limit, offset]);
-    for (const r of rows) await rearmIfOverdue(c.env, origin(c), r);
+    for (const r of rows) await rearmIfOverdue(c.env, origin(c), r.id);
     const total = await get<{ n: number }>("SELECT COUNT(*) AS n FROM lists");
     return c.json({ lists: rows.map((r) => summary(r)), total: total?.n ?? 0, page, limit }, 200);
   },
@@ -274,7 +304,7 @@ listRoutes.openapi(
   }),
   async (c) => {
     const row = await readList(c.req.param("id"));
-    await rearmIfOverdue(c.env, origin(c), row);
+    await rearmIfOverdue(c.env, origin(c), row.id);
     const { from } = await effectiveCap(row.id);
     return c.json({ list: summary(row), cap_from: from, sources: await sourcesOf(row.id), consumers: await consumersOf(row.id) }, 200);
   },
@@ -308,7 +338,7 @@ listRoutes.openapi(
   }),
   async (c) => {
     const list = await readList(c.req.param("id"));
-    await rearmIfOverdue(c.env, origin(c), list);
+    await rearmIfOverdue(c.env, origin(c), list.id);
     const q = c.req.valid("query");
     const { page, limit, offset } = paging(q);
     const verified = q.email_verified === "true" ? " AND d.email_verified = 1" : "";
@@ -317,7 +347,11 @@ listRoutes.openapi(
     const rows = await query<z.infer<typeof MemberSchema>>(
       `SELECT d.*, (CASE WHEN d.enrich_status = 'running' AND d.updated_at < datetime('now', ?) THEN 1 ELSE 0 END) AS stale,
               (CASE WHEN COALESCE(d.email, '') = '' THEN NULL WHEN ${inboxSql("d.email")} THEN 'inbox' ELSE 'person' END) AS email_kind,
-              m.added_at, m.source_kind, m.source_id
+              m.added_at, m.source_kind, m.source_id,
+              (CASE m.source_kind
+                 WHEN 'search' THEN (SELECT CASE WHEN r.source = 'sales_navigator' THEN 'Sales Navigator export' ELSE r.icp_prompt END FROM runs r WHERE r.id = m.source_id)
+                 WHEN 'signal' THEN (SELECT json_extract(s.config, '$.name') FROM signal_monitors s WHERE s.id = m.source_id)
+               END) AS source_name
          FROM list_members m JOIN leads d ON d.id = m.lead_id
         WHERE m.list_id = ?${verified}${kind}
         ORDER BY m.added_at, m.lead_id LIMIT ? OFFSET ?`,
@@ -414,9 +448,10 @@ listRoutes.openapi(
 
 // ── Control (unpublished: see the top of this file) ─────────────────
 
+// No schedule of its own: each search in it has one (sources), and a signal
+// keeps its own. A `refresh` sent to create one is left out.
 const ListInput = z.object({
   name: z.string().trim().min(1, "A list needs a name").max(120),
-  refresh: z.enum(REFRESH).optional(),
   email_daily_cap: z.number().int().min(0).max(1000).nullable().optional(),
 });
 
@@ -432,16 +467,7 @@ listRoutes.post("/api/lists", async (c) => {
   notForApps(c);
   const input = ListInput.parse(await body(c));
   const id = crypto.randomUUID();
-  const refresh = input.refresh ?? "daily";
-  const next = nextRefresh(refresh, new Date());
-  await run("INSERT INTO lists (id, name, refresh, email_daily_cap, next_refresh_at) VALUES (?, ?, ?, ?, ?)", [
-    id,
-    input.name,
-    refresh,
-    input.email_daily_cap ?? null,
-    next,
-  ]);
-  if (next) await bookTick(c.env, origin(c), id, new Date(next));
+  await run("INSERT INTO lists (id, name, refresh, email_daily_cap) VALUES (?, ?, 'off', ?)", [id, input.name, input.email_daily_cap ?? null]);
   return c.json({ list: summary(await readList(id)) }, 201);
 });
 
@@ -450,12 +476,6 @@ listRoutes.patch("/api/lists/:id", async (c) => {
   const list = await readList(c.req.param("id"));
   const patch = ListInput.partial().strict().parse(await body(c));
   if (patch.name !== undefined) await run("UPDATE lists SET name = ?, updated_at = datetime('now') WHERE id = ?", [patch.name, list.id]);
-  if (patch.refresh !== undefined && patch.refresh !== list.refresh) {
-    // A new cadence counts from now.
-    const next = nextRefresh(patch.refresh, new Date());
-    await run("UPDATE lists SET refresh = ?, next_refresh_at = ?, updated_at = datetime('now') WHERE id = ?", [patch.refresh, next, list.id]);
-    if (next) await bookTick(c.env, origin(c), list.id, new Date(next));
-  }
   if (patch.email_daily_cap !== undefined) {
     await run("UPDATE lists SET email_daily_cap = ?, updated_at = datetime('now') WHERE id = ?", [patch.email_daily_cap, list.id]);
     await afterJoin(c.env, origin(c), [list.id]);
@@ -475,7 +495,14 @@ listRoutes.delete("/api/lists/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const SourceInput = z.object({ kind: z.enum(["search", "signal"]), source_id: z.string().min(1).max(200) }).strict();
+const SourceInput = z
+  .object({
+    kind: z.enum(["search", "signal"]),
+    source_id: z.string().min(1).max(200),
+    // A search: how often this list runs it again. Default: never.
+    refresh: z.enum(REFRESH).optional(),
+  })
+  .strict();
 
 listRoutes.post("/api/lists/:id/sources", async (c) => {
   notForApps(c);
@@ -494,10 +521,17 @@ listRoutes.post("/api/lists/:id/sources", async (c) => {
     // A re-run stands for the search it repeated.
     sourceId = search.refresh_of || search.id;
   } else {
+    if (input.refresh !== undefined) throw new InputError("A signal keeps its own schedule: change it on the signal.");
     signal = (await get<{ config: string }>("SELECT config FROM signal_monitors WHERE id = ?", [sourceId])) ?? null;
     if (!signal) throw new InputError("Signal not found", 404);
   }
-  await run("INSERT INTO list_sources (list_id, kind, source_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [list.id, input.kind, sourceId]);
+  const refresh = input.kind === "search" ? (input.refresh ?? "off") : null;
+  const next = refresh ? nextRefresh(refresh, new Date()) : null;
+  const attached = await run(
+    "INSERT INTO list_sources (list_id, kind, source_id, refresh, next_refresh_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+    [list.id, input.kind, sourceId, refresh, next],
+  );
+  if (attached.changes > 0 && next) await bookTick(c.env, origin(c), list.id, new Date(next));
   const added = await backfill(list.id, input.kind, sourceId);
   // A signal's companies nobody searched yet get a search now, newest first, as
   // many as one of its checks may record: attaching it is the review. Unless
@@ -515,6 +549,33 @@ listRoutes.post("/api/lists/:id/sources", async (c) => {
   return c.json({ source: { kind: input.kind, source_id: sourceId }, added, searching, contacts }, 201);
 });
 
+/** How often this list runs one of its searches again. A new repeat counts from now. */
+listRoutes.patch("/api/lists/:id/sources/search/:sourceId", async (c) => {
+  notForApps(c);
+  const list = await readList(c.req.param("id"));
+  const { refresh } = z.object({ refresh: z.enum(REFRESH) }).strict().parse(await body(c));
+  const next = nextRefresh(refresh, new Date());
+  const changed = await run(
+    "UPDATE list_sources SET refresh = ?, next_refresh_at = ? WHERE list_id = ? AND kind = 'search' AND source_id = ?",
+    [refresh, next, list.id, c.req.param("sourceId")],
+  );
+  if (changed.changes === 0) throw new InputError("That search is not in this list", 404);
+  if (next) await bookTick(c.env, origin(c), list.id, new Date(next));
+  return c.json({ source: (await sourcesOf(list.id)).find((s) => s.kind === "search" && s.source_id === c.req.param("sourceId")) }, 200);
+});
+
+/** Run now, for one search: hands it to the agent at once, retrying a failed or stalled re-run. */
+listRoutes.post("/api/lists/:id/sources/search/:sourceId/run", async (c) => {
+  notForApps(c);
+  const list = await readList(c.req.param("id"));
+  const sourceId = c.req.param("sourceId");
+  if (!(await get("SELECT 1 FROM list_sources WHERE list_id = ? AND kind = 'search' AND source_id = ?", [list.id, sourceId]))) {
+    throw new InputError("That search is not in this list", 404);
+  }
+  const result = await refreshList(c.env, origin(c), list.id, new Date(), true, sourceId);
+  return c.json({ started: result.started, failed: result.failed }, 202);
+});
+
 listRoutes.delete("/api/lists/:id/sources/:kind/:sourceId", async (c) => {
   notForApps(c);
   const list = await readList(c.req.param("id"));
@@ -524,7 +585,7 @@ listRoutes.delete("/api/lists/:id/sources/:kind/:sourceId", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Refresh now: run the list's searches again at once, retrying any held by a failed or stalled re-run. */
+/** Run every search now: each again at once, retrying any held by a failed or stalled re-run. Signals keep their own schedule. */
 listRoutes.post("/api/lists/:id/refresh", async (c) => {
   notForApps(c);
   const list = await readList(c.req.param("id"));

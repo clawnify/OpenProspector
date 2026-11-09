@@ -1,56 +1,38 @@
-// Lists: people that keep arriving from searches and signals, for campaigns to
-// read. The index is a table of lists; a list's page has its sources, how
-// often its searches run again, how many emails it may look up a day, who
-// reads it, and its people.
+// Lists: the home of the app. A list holds leads and the searches that fill
+// it, each on its own repeat, and a campaign reads new leads from it. The
+// leads are the page, the searches that fill it sit above them, and an empty
+// list opens on "who should this list find?".
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Command } from "cmdk";
-import { Activity, ChevronRight, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Activity, ChevronRight, Compass, ExternalLink, ListPlus, Plus, Search, Trash2, X } from "lucide-react";
 import {
   api,
-  type ListConsumer,
   type ListMember,
   type ListSource,
   type ProspectList,
   type Refresh,
   type Run,
 } from "../api";
-import type { Monitor } from "../../shared/monitors";
+import { MONITOR_TEMPLATES, type Monitor, type MonitorKind } from "../../shared/monitors";
 import { isInbox } from "../../shared/inbox";
-import { Button, Card, CardTitle, Chip, Dialog, Empty, Picker, Popover, PopoverContent, PopoverTrigger, Tooltip, Zone } from "../components/ui";
+import { Badge, Button, Card, CardTitle, Chip, Dialog, Empty, Picker, Popover, PopoverContent, PopoverTrigger, Tooltip, Zone } from "../components/ui";
 import { StatusBadge } from "../components/leads-table";
+import { MonitorForm, REPEAT_LABELS, SignalRow, addedMessage } from "../components/signal-monitors";
+import { ago, until } from "../time";
 
-const REFRESH_OPTIONS: { value: Refresh; label: string }[] = [
-  { value: "hourly", label: "Every hour" },
+const REPEAT_OPTIONS: { value: Refresh; label: string }[] = [
+  { value: "off", label: "Run once" },
   { value: "daily", label: "Every day" },
   { value: "weekly", label: "Every week" },
-  { value: "off", label: "Only when I refresh" },
+  { value: "biweekly", label: "Every 2 weeks" },
 ];
-const refreshLabel = (r: Refresh) => REFRESH_OPTIONS.find((o) => o.value === r)?.label ?? r;
+/** Every hour is no longer offered, but a search set to it before keeps showing it. */
+const repeatOptions = (current: Refresh) =>
+  current === "hourly" ? [...REPEAT_OPTIONS, { value: "hourly" as const, label: "Every hour" }] : REPEAT_OPTIONS;
 
-/** SQLite's "YYYY-MM-DD HH:MM:SS" (UTC) or an ISO string, as a Date. */
-function parse(at: string): Date {
-  return new Date(at.includes("T") ? at : `${at.replace(" ", "T")}Z`);
-}
-
-function ago(at: string | null): string {
-  if (!at) return "never";
-  const s = Math.round((Date.now() - parse(at).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return parse(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function until(at: string | null): string {
-  if (!at) return "not scheduled";
-  const s = Math.round((parse(at).getTime() - Date.now()) / 1000);
-  if (s <= 60) return "in a moment";
-  if (s < 3600) return `in ${Math.round(s / 60)} min`;
-  if (s < 86400) return `in ${Math.round(s / 3600)} h`;
-  return parse(at).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-}
+type Notice = { tone: "success" | "danger"; text: string } | null;
 
 function PageHeader({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
@@ -61,12 +43,12 @@ function PageHeader({ title, children }: { title: ReactNode; children?: ReactNod
   );
 }
 
-function Notice({ notice }: { notice: { tone: "success" | "danger"; text: string } | null }) {
+function NoticeBar({ notice }: { notice: Notice }) {
   if (!notice) return null;
   return (
     <div
       role="status"
-      className={`mb-5 rounded-sm px-3 py-2 text-sm ${notice.tone === "success" ? "bg-success-tint text-success" : "bg-destructive-tint text-destructive"}`}
+      className={`rounded-sm px-3 py-2 text-sm ${notice.tone === "success" ? "bg-success-tint text-success" : "bg-destructive-tint text-destructive"}`}
     >
       {notice.text}
     </div>
@@ -75,15 +57,23 @@ function Notice({ notice }: { notice: { tone: "success" | "danger"; text: string
 
 const TH = "h-8 px-4 text-left text-xs font-medium text-muted-foreground";
 
-// ── The index ───────────────────────────────────────────────────────
+/** The daily lookups as typed: a number from 0 to 1000, or empty for none of its own. */
+function parseCap(v: string): number | null | "invalid" {
+  const t = v.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1000, Math.round(n))) : "invalid";
+}
+
+// ── The index (the app's home) ──────────────────────────────────────
 
 export function ListsIndex() {
   const navigate = useNavigate();
   const [lists, setLists] = useState<ProspectList[] | null>(null);
-  const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [refresh, setRefresh] = useState<Refresh>("daily");
+  const [cap, setCap] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -97,10 +87,11 @@ export function ListsIndex() {
   }, []);
 
   async function create() {
-    if (!name.trim()) return;
+    const daily = parseCap(cap);
+    if (!name.trim() || daily === "invalid") return;
     setSaving(true);
     try {
-      const { list } = await api.createList({ name: name.trim(), refresh });
+      const { list } = await api.createList({ name: name.trim(), email_daily_cap: daily });
       navigate(`/lists/${list.id}`);
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
@@ -118,7 +109,7 @@ export function ListsIndex() {
 
       {notice ? (
         <div className="px-6 pt-6">
-          <Notice notice={notice} />
+          <NoticeBar notice={notice} />
         </div>
       ) : null}
 
@@ -131,7 +122,7 @@ export function ListsIndex() {
       ) : lists.length === 0 ? (
         <Empty
           title="No lists yet"
-          hint="A list keeps filling from your searches and signals, and a campaign can read new people from it every day."
+          hint="A list fills itself. Tell it who to find and how often to look, and new leads join it with the evidence of why they fit. A campaign can then take a few new ones every day."
         />
       ) : (
         <div className="overflow-x-auto">
@@ -139,10 +130,10 @@ export function ListsIndex() {
             <thead>
               <tr className="border-b border-border">
                 <th className={`${TH} pl-6`}>Name</th>
-                <th className={TH}>Refresh</th>
-                <th className={`${TH} text-right`}>People</th>
-                <th className={`${TH} text-right`}>Verified emails</th>
-                <th className={`${TH} text-right`}>Lookups today</th>
+                <th className={`${TH} hidden text-right md:table-cell`}>Searches</th>
+                <th className={`${TH} text-right`}>Leads</th>
+                <th className={`${TH} hidden text-right sm:table-cell`}>Verified emails</th>
+                <th className={`${TH} hidden text-right md:table-cell`}>Emails a day</th>
                 <th className={`${TH} w-10 pr-6`} />
               </tr>
             </thead>
@@ -158,14 +149,11 @@ export function ListsIndex() {
                       {l.name}
                     </Link>
                   </td>
-                  <td className="px-4 py-2 text-muted-foreground">
-                    {refreshLabel(l.refresh)}
-                    {l.next_refresh_at ? <span className="text-faint"> · next {until(l.next_refresh_at)}</span> : null}
-                  </td>
+                  <td className="data hidden px-4 py-2 text-right md:table-cell">{l.source_count}</td>
                   <td className="data px-4 py-2 text-right">{l.member_count.toLocaleString()}</td>
-                  <td className="data px-4 py-2 text-right">{l.verified_count.toLocaleString()}</td>
-                  <td className="data px-4 py-2 text-right">
-                    {l.effective_daily_cap > 0 ? `${l.lookups_today} of ${l.effective_daily_cap}` : <span className="text-faint">none set</span>}
+                  <td className="data hidden px-4 py-2 text-right sm:table-cell">{l.verified_count.toLocaleString()}</td>
+                  <td className="data hidden px-4 py-2 text-right md:table-cell">
+                    {l.effective_daily_cap > 0 ? `${l.lookups_today} of ${l.effective_daily_cap}` : <span className="text-faint">none</span>}
                   </td>
                   <td className="px-4 py-2 pr-6 text-right text-muted-foreground">
                     <ChevronRight size={16} className="invisible group-hover:visible" />
@@ -181,19 +169,28 @@ export function ListsIndex() {
         open={creating}
         onOpenChange={setCreating}
         title="New list"
-        description="Add searches and signals to it once it exists. New people they find join it on their own."
+        description="Next you tell it who to find. New leads join it on their own."
         submitLabel="Create list"
-        submitting={saving || !name.trim()}
+        submitting={saving || !name.trim() || parseCap(cap) === "invalid"}
         onSubmit={() => void create()}
       >
         <label className="block text-sm">
           <span className="mb-1 block font-medium">Name</span>
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Dutch building firms" className="input text-sm" maxLength={120} />
         </label>
-        <div className="text-sm">
-          <span className="mb-1 block font-medium">Run its searches again</span>
-          <Picker label="Refresh" value={refresh} options={REFRESH_OPTIONS} onChange={(v) => setRefresh(v as Refresh)} />
-        </div>
+        <label className="block text-sm">
+          <span className="mb-1 block font-medium">Emails looked up a day (optional)</span>
+          <input
+            inputMode="numeric"
+            value={cap}
+            onChange={(e) => setCap(e.target.value.replace(/[^0-9]/g, ""))}
+            placeholder="None"
+            className="input data w-32 text-sm"
+          />
+          <span className="mt-1 block text-xs text-muted-foreground">
+            New leads without an email are looked up with your email providers, up to this many a day. Left empty, none are, until you set it or a campaign reads the list.
+          </span>
+        </label>
       </Dialog>
     </div>
   );
@@ -206,81 +203,268 @@ type Detail = Awaited<ReturnType<typeof api.list>>;
 /** An error as the end of a sentence: no doubled full stop. */
 const because = (error: string) => (error ? `: ${error.replace(/[.\s]+$/, "")}` : "");
 
-function sourceLine(s: ListSource): { text: string; tone: "neutral" | "warning" | "danger" } {
-  if (s.missing) return { text: s.kind === "search" ? "This search was deleted" : "This signal was deleted", tone: "warning" };
-  if (s.kind === "signal") {
-    if (s.schedule_error) return { text: `Its schedule has a problem: ${s.schedule_error}`, tone: "danger" };
-    if (s.active === false) return { text: "Paused. New people join again when it is resumed.", tone: "neutral" };
-    const freq = s.frequency === "daily" ? "Checks every day" : s.frequency === "weekly" ? "Checks every week" : "Checks when you run it";
-    return { text: `${freq}, on its own schedule. New people it finds join without review, and so do the people found at the companies it finds.`, tone: "neutral" };
-  }
+/** Where a search's re-runs stand, in one line. */
+function searchLine(s: ListSource): { text: string; tone: "neutral" | "warning" | "danger" } {
+  if (s.missing) return { text: "This search was deleted", tone: "warning" };
   const last = s.last_refresh;
-  if (!last) return { text: "Not run again yet", tone: "neutral" };
+  if (!last) return { text: s.refresh && s.refresh !== "off" ? "Not run again yet" : "Ran when it was started", tone: "neutral" };
   switch (s.hold) {
     case "stalled":
-      return { text: `The re-run ${ago(last.created_at)} stopped reporting. Refresh now starts another.`, tone: "warning" };
+      return { text: `The run ${ago(last.created_at)} stopped reporting. Run now starts another.`, tone: "warning" };
     case "failed":
-      return { text: `The re-run ${ago(last.created_at)} failed${because(last.error)}. Refresh now tries again.`, tone: "danger" };
+      return { text: `The run ${ago(last.created_at)} failed${because(last.error)}. Run now tries again.`, tone: "danger" };
     case "undelivered":
-      return { text: `The re-run ${ago(last.created_at)} couldn't reach the agent${because(last.error)}. Refresh now tries again.`, tone: "danger" };
+      return { text: `The run ${ago(last.created_at)} couldn't reach the agent${because(last.error)}. Run now tries again.`, tone: "danger" };
     case "working":
-      return { text: `Running again since ${ago(last.created_at)}`, tone: "neutral" };
+      return { text: `Running since ${ago(last.created_at)}`, tone: "neutral" };
     default:
-      return { text: `Ran again ${ago(last.created_at)}, ${last.lead_count} found`, tone: "neutral" };
+      return { text: `Last run ${ago(last.created_at)}, ${last.lead_count} found`, tone: "neutral" };
   }
 }
 
-/** Searches and signals to add, in one combobox with a group each. */
-/**
- * What attaching a source did: people who joined, and companies it found whose
- * people are being looked for, or, on a signal set not to look, are waiting.
- */
-function addedMessage(added: number, searching: number, contacts: boolean): string {
-  const people = added ? ` ${added} ${added === 1 ? "person" : "people"} it already found joined.` : "";
-  const companies = searching ? ` Finding who to contact at ${searching} ${searching === 1 ? "company" : "companies"} it found.` : "";
-  const waiting = contacts ? "" : " Its companies wait on Signals: press Find people on the ones you want, and their people join this list.";
-  return `Added.${people}${companies}${waiting}`;
+const TONE = { neutral: "text-muted-foreground", warning: "text-warning", danger: "text-destructive" } as const;
+
+function RemoveSource({ name, onRemove }: { name: string; onRemove: () => void }) {
+  return (
+    <Tooltip label="Remove from this list. The leads it added stay.">
+      <Button variant="ghost" size="icon" onClick={onRemove} aria-label={`Remove ${name}`}>
+        <X size={16} />
+      </Button>
+    </Tooltip>
+  );
 }
 
-function AddSource({ listId, existing, onAdded }: { listId: string; existing: ListSource[]; onAdded: (added: number, searching: number, contacts: boolean) => void }) {
+/** A search (a described profile or a Sales Navigator export) and how often this list runs it again. */
+function SearchRow({ listId, source, act, onRemove }: { listId: string; source: ListSource; act: (fn: () => Promise<unknown>, success?: string) => Promise<void>; onRemove: () => void }) {
+  const line = searchLine(source);
+  const salesNav = source.search_source === "sales_navigator";
+  const repeat = source.refresh ?? "off";
+  const [running, setRunning] = useState(false);
+  return (
+    <div className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border px-4 py-3 last:border-0">
+      {salesNav ? <Compass size={16} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden /> : <Search size={16} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />}
+      <div className="min-w-[12rem] flex-1">
+        <span className="line-clamp-2 text-sm font-medium" title={source.name}>
+          {salesNav ? "Sales Navigator export" : source.name}
+        </span>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {salesNav ? "Exports the list again" : "Finds people"} · {REPEAT_LABELS[repeat]}
+          {repeat !== "off" && source.next_refresh_at ? `, next ${until(source.next_refresh_at)}` : ""}
+        </p>
+        <p className={`mt-0.5 text-xs ${TONE[line.tone]}`}>{line.text}</p>
+      </div>
+      {!source.missing ? (
+        <div className="flex shrink-0 items-center gap-1">
+          <Picker
+            kind="view"
+            label="Repeat"
+            value={repeat}
+            options={repeatOptions(repeat)}
+            onChange={(v) => void act(() => api.setSearchRefresh(listId, source.source_id, v as Refresh), "Saved.")}
+          />
+          <Button
+            disabled={running || source.hold === "working"}
+            onClick={async () => {
+              setRunning(true);
+              await act(async () => {
+                const r = await api.runListSearch(listId, source.source_id);
+                if (r.failed > 0) throw new Error("Couldn't hand it to your agent. The reason is on the search.");
+              }, "Handed to your agent. New leads join as they are found.");
+              setRunning(false);
+            }}
+          >
+            Run now
+          </Button>
+          <RemoveSource name={source.name} onRemove={onRemove} />
+        </div>
+      ) : (
+        <RemoveSource name={source.name} onRemove={onRemove} />
+      )}
+    </div>
+  );
+}
+
+type Adding = null | "find" | "linkedin" | MonitorKind | "salesnav" | "existing";
+
+/** The ways a list can fill, as a menu once it has a search. */
+function AddSearchMenu({ onPick }: { onPick: (a: Adding) => void }) {
   const [open, setOpen] = useState(false);
+  const pick = (a: Adding) => {
+    setOpen(false);
+    onPick(a);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button>
+          <Plus size={16} /> Add search
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-1">
+        <WaysToFill onPick={pick} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+const WAYS: { id: Adding; icon: ReactNode; title: string; hint: string }[] = [
+  { id: "find", icon: <Activity size={16} />, title: "Companies or people", hint: "Describe who. Your agent researches the web, on a repeat." },
+  { id: "linkedin", icon: <img src={import.meta.env.VITE_LINKEDIN_LOGO_URL} alt="" width={16} height={16} />, title: "LinkedIn engagement", hint: "People who comment on or react to posts." },
+  { id: "salesnav", icon: <Compass size={16} />, title: "Sales Navigator list", hint: "Export a saved search or lead list." },
+  { id: "existing", icon: <ListPlus size={16} />, title: "One you already have", hint: "A search or signal you made before." },
+];
+
+function WaysToFill({ onPick, skip }: { onPick: (a: Adding) => void; skip?: Adding }) {
+  return (
+    <div className="flex flex-col">
+      {WAYS.filter((w) => w.id !== skip).map((w) => (
+        <button
+          key={String(w.id)}
+          type="button"
+          onClick={() => onPick(w.id)}
+          className="flex items-start gap-2.5 rounded-sm px-2 py-2 text-left hover:bg-muted"
+        >
+          <span className="mt-0.5 text-muted-foreground">{w.icon}</span>
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">{w.title}</span>
+            <span className="block text-xs text-muted-foreground">{w.hint}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LinkedinTemplates({ onPick, onClose }: { onPick: (k: MonitorKind) => void; onClose: () => void }) {
+  return (
+    <Card className="mt-4">
+      <div className="space-y-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="card-title">LinkedIn engagement</h2>
+            <p className="mt-1 text-sm text-muted-foreground">Your agent watches posts in its own signed-in LinkedIn browser.</p>
+          </div>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {MONITOR_TEMPLATES.map((t) => (
+            <button key={t.id} type="button" onClick={() => onPick(t.id)} className="card min-w-0 p-4 text-left transition-colors hover:bg-muted">
+              <img src={import.meta.env.VITE_LINKEDIN_LOGO_URL} alt="LinkedIn" width={22} height={22} className="mb-3" />
+              <span className="block text-sm font-medium">{t.title}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{t.description}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** A Sales Navigator export made inside the list: saved, added with its repeat, then handed to the agent. */
+function SalesNavForm({ listId, onClose, onSaved }: { listId: string; onClose: () => void; onSaved: (message: string) => void }) {
+  const [url, setUrl] = useState("");
+  const [emails, setEmails] = useState(true);
+  const [repeat, setRepeat] = useState<Refresh>("off");
+  const [runId, setRunId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      let id = runId;
+      if (!id) {
+        id = (await api.createSalesNavRun(url.trim(), emails)).run.id;
+        await api.addListSource(listId, "search", id, repeat);
+        setRunId(id);
+      }
+      await api.dispatchRun(id);
+      onSaved("Handed to your agent. The people it exports join this list.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card className="mt-4">
+      <form className="space-y-4 p-4" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="card-title">Sales Navigator list</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              A lead search, saved search or lead list. Your agent opens it in its own browser, signed in to Sales Navigator, and exports up to 2,500 people. It stops if LinkedIn asks it to sign in or slow down.
+            </p>
+          </div>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
+        </div>
+        <fieldset disabled={busy || Boolean(runId)} className="space-y-4 disabled:opacity-60">
+          <label className="block text-sm">
+            <span className="sr-only">Sales Navigator link</span>
+            <input type="url" inputMode="url" required autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.linkedin.com/sales/search/people?savedSearchId=…" className="input w-full text-sm" />
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input className="mt-1 accent-primary" type="checkbox" checked={emails} onChange={(e) => setEmails(e.target.checked)} />
+            <span>
+              Find work emails for the first export
+              <span className="block text-xs text-muted-foreground">
+                {emails ? "Found and verified with your email providers once the list is in. Later exports use the list's daily number." : "Names, titles, profile links and company details only. No credits are used."}
+              </span>
+            </span>
+          </label>
+          <div className="w-48 text-sm">
+            Repeat
+            <Picker label="Repeat" value={repeat} options={REPEAT_OPTIONS} onChange={(v) => setRepeat(v as Refresh)} className="mt-1 w-full" />
+          </div>
+        </fieldset>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={busy || !url.trim()}>{busy ? "Starting…" : runId ? "Retry" : "Add to list"}</Button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+/** Searches and signals made before, to add to this list. */
+function ExistingPicker({ listId, existing, onClose, onAdded }: { listId: string; existing: ListSource[]; onClose: () => void; onAdded: (message: string) => void }) {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [monitors, setMonitors] = useState<Monitor[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setError(null);
     Promise.all([api.runs(1, { searchesOnly: true, limit: 100 }), api.monitors(1)])
       .then(([r, m]) => {
         setRuns(r.runs);
         setMonitors(m.monitors);
       })
       .catch((e) => setError((e as Error).message));
-  }, [open]);
+  }, []);
 
   const has = (kind: string, id: string) => existing.some((s) => s.kind === kind && s.source_id === id);
 
   async function add(kind: "search" | "signal", id: string) {
-    setOpen(false);
+    setError(null);
     try {
       const r = await api.addListSource(listId, kind, id);
-      onAdded(r.added, r.searching, r.contacts);
+      onAdded(kind === "signal" ? addedMessage(r.added, r.searching, r.contacts) : `Added.${r.added ? ` ${r.added} ${r.added === 1 ? "lead" : "leads"} it already found joined this list.` : ""} It runs once; set it to repeat on its row.`);
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
+  const item = "flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:cursor-default data-[disabled=true]:opacity-50 data-[selected=true]:bg-muted";
+  const group = "[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:text-muted-foreground";
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button>
-          <Plus size={16} /> Add source
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-96">
-        <Command label="Add a source">
-          <Command.Input placeholder="Search your searches and signals" className="input mb-1 h-8 text-sm" />
+    <Card className="mt-4">
+      <div className="p-4">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h2 className="card-title">One you already have</h2>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+        <Command label="Add a search you already have">
+          <Command.Input autoFocus placeholder="Search your searches and signals" className="input mb-1 h-8 text-sm" />
           <Command.List className="max-h-72 overflow-y-auto">
             {runs === null || monitors === null ? (
               <Command.Loading>
@@ -288,36 +472,24 @@ function AddSource({ listId, existing, onAdded }: { listId: string; existing: Li
               </Command.Loading>
             ) : null}
             <Command.Empty className="px-2 py-1.5 text-sm text-muted-foreground">Nothing matches</Command.Empty>
-            {runs && runs.length ? (
-              <Command.Group heading="Searches" className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:text-muted-foreground">
-                {runs.map((r) => (
-                  <Command.Item
-                    key={r.id}
-                    value={`search ${r.icp_prompt} ${r.id}`}
-                    disabled={has("search", r.id)}
-                    onSelect={() => void add("search", r.id)}
-                    className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:cursor-default data-[disabled=true]:opacity-50 data-[selected=true]:bg-muted"
-                  >
-                    <Search size={14} className="shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{r.icp_prompt}</span>
-                    {has("search", r.id) ? <span className="text-xs text-muted-foreground">added</span> : null}
+            {monitors && monitors.length ? (
+              <Command.Group heading="Repeating searches (signals)" className={group}>
+                {monitors.map((m) => (
+                  <Command.Item key={m.id} value={`signal ${m.name} ${m.id}`} disabled={has("signal", m.id)} onSelect={() => void add("signal", m.id)} className={item}>
+                    <Activity size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                    {has("signal", m.id) ? <span className="text-xs text-muted-foreground">added</span> : m.lists_fed ? <span className="text-xs text-muted-foreground">in {m.lists_fed} {m.lists_fed === 1 ? "list" : "lists"}</span> : null}
                   </Command.Item>
                 ))}
               </Command.Group>
             ) : null}
-            {monitors && monitors.length ? (
-              <Command.Group heading="Signals" className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:text-muted-foreground">
-                {monitors.map((m) => (
-                  <Command.Item
-                    key={m.id}
-                    value={`signal ${m.name} ${m.id}`}
-                    disabled={has("signal", m.id)}
-                    onSelect={() => void add("signal", m.id)}
-                    className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:cursor-default data-[disabled=true]:opacity-50 data-[selected=true]:bg-muted"
-                  >
-                    <Activity size={14} className="shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{m.name}</span>
-                    {has("signal", m.id) ? <span className="text-xs text-muted-foreground">added</span> : null}
+            {runs && runs.length ? (
+              <Command.Group heading="Searches from Leads" className={group}>
+                {runs.map((r) => (
+                  <Command.Item key={r.id} value={`search ${r.icp_prompt} ${r.id}`} disabled={has("search", r.id)} onSelect={() => void add("search", r.id)} className={item}>
+                    {r.source === "sales_navigator" ? <Compass size={14} className="shrink-0 text-muted-foreground" /> : <Search size={14} className="shrink-0 text-muted-foreground" />}
+                    <span className="min-w-0 flex-1 truncate">{r.source === "sales_navigator" ? "Sales Navigator export" : r.icp_prompt}</span>
+                    {has("search", r.id) ? <span className="text-xs text-muted-foreground">added</span> : null}
                   </Command.Item>
                 ))}
               </Command.Group>
@@ -325,42 +497,28 @@ function AddSource({ listId, existing, onAdded }: { listId: string; existing: Li
           </Command.List>
           {error && runs !== null ? <p className="px-2 py-1.5 text-xs text-destructive">{error}</p> : null}
         </Command>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function SourceRow({ source, onRemove }: { source: ListSource; onRemove: () => void }) {
-  const line = sourceLine(source);
-  const tone = { neutral: "text-muted-foreground", warning: "text-warning", danger: "text-destructive" }[line.tone];
-  return (
-    <div className="flex items-start gap-3 border-b border-border px-4 py-3 last:border-0">
-      <span className="mt-0.5 text-muted-foreground">{source.kind === "search" ? <Search size={16} /> : <Activity size={16} />}</span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{source.name}</span>
-          <Chip>{source.kind === "search" ? "Search" : "Signal"}</Chip>
-        </div>
-        <p className={`mt-0.5 text-xs ${tone}`}>{line.text}</p>
       </div>
-      <Tooltip label="Remove source. The people it added stay in the list.">
-        <Button variant="ghost" size="icon" onClick={onRemove} aria-label={`Remove ${source.name}`}>
-          <X size={16} />
-        </Button>
-      </Tooltip>
-    </div>
+    </Card>
   );
 }
 
-function capLine(d: Detail): string {
-  const { list, cap_from } = d;
-  if (cap_from === "list") return `Set here: up to ${list.effective_daily_cap} a day.`;
-  if (cap_from === "consumers") return `From the campaigns reading it: ${list.effective_daily_cap} a day.`;
-  return "None set, so no emails are looked up on their own. Set a number, or let a campaign read this list.";
+/** Why a lead fits, from its evidence: the reasoning, without the profile line a signal adds. */
+function why(m: ListMember): string {
+  return (m.evidence || "")
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("Profile: "))
+    .join(" ");
 }
 
-function memberSource(m: ListMember): string {
-  return m.source_kind === "search" ? "Search" : m.source_kind === "signal" ? "Signal" : "By hand";
+function foundBy(m: ListMember): string {
+  if (m.source_kind === "manual") return "Added by hand";
+  return m.source_name ?? (m.source_kind === "search" ? "A deleted search" : "A deleted signal");
+}
+
+/** A lead nobody has looked up yet: queued while the list looks up emails, else said plainly. */
+function MemberStatus({ member, lookups }: { member: ListMember; lookups: boolean }) {
+  if (member.enrich_status === "pending") return <Badge tone="neutral">{lookups ? "Queued" : "Not looked up"}</Badge>;
+  return <StatusBadge lead={member} />;
 }
 
 export function ListDetail() {
@@ -369,10 +527,13 @@ export function ListDetail() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [members, setMembers] = useState<{ members: ListMember[]; total: number; limit: number } | null>(null);
   const [page, setPage] = useState(1);
-  const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
   const [cap, setCap] = useState("");
   const [deleting, setDeleting] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  // What is being added. An empty list opens on finding companies or people;
+  // closing it shows the other ways in.
+  const [adding, setAdding] = useState<Adding>(null);
+  const [dismissed, setDismissed] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -398,6 +559,22 @@ export function ListDetail() {
   useEffect(() => {
     void loadMembers();
   }, [loadMembers]);
+  useEffect(() => {
+    const changed = () => void load();
+    window.addEventListener("monitors-changed", changed);
+    return () => window.removeEventListener("monitors-changed", changed);
+  }, [load]);
+
+  // Poll only while one of its searches is running: new leads arrive then.
+  const running = (detail?.sources ?? []).some((s) => s.monitor?.last_check?.status === "sourcing" || s.hold === "working");
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => {
+      void load();
+      void loadMembers();
+    }, 15_000);
+    return () => clearInterval(t);
+  }, [running, load, loadMembers]);
 
   async function act(fn: () => Promise<unknown>, success?: string) {
     try {
@@ -406,65 +583,59 @@ export function ListDetail() {
       await Promise.all([load(), loadMembers()]);
     } catch (e) {
       setNotice({ tone: "danger", text: (e as Error).message });
+      await load();
     }
   }
 
   async function saveCap() {
-    const v = cap.trim();
-    const next = v === "" ? null : Math.max(0, Math.min(1000, Math.round(Number(v))));
-    if (v !== "" && !Number.isFinite(Number(v))) {
-      setNotice({ tone: "danger", text: "The daily lookups are a number from 0 to 1000, or empty to follow the campaigns." });
+    const next = parseCap(cap);
+    if (next === "invalid") {
+      setNotice({ tone: "danger", text: "The emails a day are a number from 0 to 1000, or empty for none of its own." });
       return;
     }
     if (detail && next === detail.list.email_daily_cap) return;
     await act(() => api.updateList(id, { email_daily_cap: next }), "Saved.");
   }
 
-  async function refreshNow() {
-    setRefreshing(true);
-    await act(async () => {
-      const r = await api.refreshList(id);
-      const searches = (n: number) => `${n} search${n === 1 ? "" : "es"}`;
-      setNotice(
-        r.failed > 0
-          ? { tone: "danger", text: `Couldn't hand ${searches(r.failed)} to your agent. The reason is under Sources.` }
-          : r.started > 0
-            ? { tone: "success", text: `Handed ${searches(r.started)} to your agent. New people join as they are found.` }
-            : { tone: "success", text: "Nothing to run again: no search source, or each one is still running." },
-      );
-    });
-    setRefreshing(false);
-  }
+  const saved = (message: string) => {
+    setAdding(null);
+    setDismissed(true);
+    void act(async () => undefined, message);
+  };
 
   if (!detail) {
     return (
       <div className="flex min-h-full flex-col">
-        <PageHeader title={<Link to="/lists" className="text-muted-foreground hover:text-foreground">Lists</Link>} />
+        <PageHeader title={<Link to="/" className="text-muted-foreground hover:text-foreground">Lists</Link>} />
         <div className="px-6 py-6">
-          <Notice notice={notice} />
+          <NoticeBar notice={notice} />
           {notice ? null : <div className="h-40 animate-pulse rounded-md bg-muted" aria-busy="true" />}
         </div>
       </div>
     );
   }
 
-  const { list, sources, consumers } = detail;
+  const { list, sources, consumers, cap_from } = detail;
   const pages = members ? Math.max(1, Math.ceil(members.total / members.limit)) : 1;
+  const open: Adding = adding ?? (sources.length === 0 && !dismissed ? "find" : null);
+  const close = () => {
+    setAdding(null);
+    setDismissed(true);
+  };
+  const lookups = list.effective_daily_cap > 0;
+  const remove = (s: ListSource) => () => void act(() => api.removeListSource(id, s.kind, s.source_id), "Removed. The leads it added stay.");
 
   return (
     <div className="flex min-h-full flex-col">
       <PageHeader
         title={
           <span className="flex items-center gap-1.5">
-            <Link to="/lists" className="text-muted-foreground hover:text-foreground">Lists</Link>
+            <Link to="/" className="text-muted-foreground hover:text-foreground">Lists</Link>
             <ChevronRight size={18} className="text-faint" />
             <span className="truncate">{list.name}</span>
           </span>
         }
       >
-        <Button onClick={() => void refreshNow()} disabled={refreshing}>
-          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} /> Refresh now
-        </Button>
         <Tooltip label="Delete list">
           <Button variant="ghost" size="icon" onClick={() => setDeleting(true)} aria-label="Delete list">
             <Trash2 size={16} />
@@ -472,105 +643,90 @@ export function ListDetail() {
         </Tooltip>
       </PageHeader>
 
-      <div className="space-y-6 px-6 py-6">
-        <Notice notice={notice} />
+      <div className="px-6 py-6">
+        <NoticeBar notice={notice} />
 
-        <div className="grid items-start gap-6 lg:grid-cols-2">
-          <Card>
-            <Zone>
-              <CardTitle right={<AddSource listId={id} existing={sources} onAdded={(n, searching, contacts) => void act(async () => undefined, addedMessage(n, searching, contacts))} />}>
-                Sources
-              </CardTitle>
-            </Zone>
-            {sources.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-muted-foreground">
-                No sources yet. Add a search or a signal, and the people it finds join this list.
-              </p>
-            ) : (
-              <div>
-                {sources.map((s) => (
-                  <SourceRow
-                    key={`${s.kind}:${s.source_id}`}
-                    source={s}
-                    onRemove={() => void act(() => api.removeListSource(id, s.kind, s.source_id), "Removed. The people it added stay.")}
-                  />
-                ))}
+        {/* An empty list opens straight on "who should this list find?"; the
+            searches card appears once something fills it. */}
+        {sources.length === 0 && open ? null : (
+        <Card className={notice ? "mt-4" : ""}>
+          <Zone className="py-3">
+            <CardTitle right={sources.length ? <AddSearchMenu onPick={setAdding} /> : undefined}>Searches</CardTitle>
+          </Zone>
+          {sources.length === 0 ? (
+              <div className="px-2 py-2">
+                <p className="px-2 pb-1 text-sm text-muted-foreground">Nothing fills this list yet. How should it find leads?</p>
+                <WaysToFill onPick={setAdding} />
               </div>
-            )}
-          </Card>
-
-          <Card>
-            <Zone>
-              <CardTitle>Settings</CardTitle>
-            </Zone>
-            <Zone>
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Run its searches again</div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {list.refresh === "off" ? "Only when you press Refresh now." : `Next ${until(list.next_refresh_at)}. Signals keep their own schedule.`}
-                  </p>
+          ) : (
+            sources.map((s) =>
+              s.kind === "signal" && s.monitor ? (
+                <SignalRow key={`signal:${s.source_id}`} monitor={s.monitor} onChanged={() => void load()} extra={<RemoveSource name={s.name} onRemove={remove(s)} />} />
+              ) : s.kind === "signal" ? (
+                <div key={`signal:${s.source_id}`} className="flex items-center gap-3 border-b border-border px-4 py-3 last:border-0">
+                  <Activity size={16} className="text-muted-foreground" aria-hidden />
+                  <span className="flex-1 text-sm text-warning">This signal was deleted</span>
+                  <RemoveSource name={s.name} onRemove={remove(s)} />
                 </div>
-                <Picker
-                  label="Refresh"
-                  className="w-48"
-                  value={list.refresh}
-                  options={REFRESH_OPTIONS}
-                  onChange={(v) => void act(() => api.updateList(id, { refresh: v as Refresh }), "Saved.")}
-                />
-              </div>
-            </Zone>
-            <Zone>
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <label htmlFor="cap" className="text-sm font-medium">Emails looked up a day</label>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{capLine(detail)}</p>
-                </div>
-                <input
-                  id="cap"
-                  inputMode="numeric"
-                  value={cap}
-                  onChange={(e) => setCap(e.target.value.replace(/[^0-9]/g, ""))}
-                  onBlur={() => void saveCap()}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void saveCap();
-                  }}
-                  placeholder="From campaigns"
-                  className="input data w-48 text-sm"
-                />
-              </div>
-              <p className="mt-3 text-xs text-muted-foreground">
-                <span className="data">{list.lookups_today}</span> looked up today, emails only, from the cache when it has them. Phones are never bought on their own.
-              </p>
-            </Zone>
-            <Zone>
-              <div className="text-sm font-medium">Read by</div>
-              {consumers.length === 0 ? (
-                <p className="mt-0.5 text-xs text-muted-foreground">No campaign reads this list yet.</p>
               ) : (
-                <ul className="mt-2 space-y-1">
-                  {consumers.map((k: ListConsumer) => (
-                    <li key={k.key} className="flex items-center justify-between text-sm">
-                      <span className="truncate">{k.name}</span>
-                      <span className="data text-muted-foreground">{k.daily} a day</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Zone>
-          </Card>
-        </div>
+                <SearchRow key={`search:${s.source_id}`} listId={id} source={s} act={act} onRemove={remove(s)} />
+              ),
+            )
+          )}
+        </Card>
+        )}
+
+        {open === "find" ? <MonitorForm key="find" kind="custom" listId={id} listName={sources.length ? undefined : list.name} onClose={close} onSaved={saved} /> : null}
+        {open === "linkedin" ? <LinkedinTemplates onPick={(k) => setAdding(k)} onClose={close} /> : null}
+        {open && MONITOR_TEMPLATES.some((t) => t.id === open) ? <MonitorForm key={String(open)} kind={open as MonitorKind} listId={id} onClose={close} onSaved={saved} /> : null}
+        {open === "salesnav" ? <SalesNavForm listId={id} onClose={close} onSaved={saved} /> : null}
+        {open === "existing" ? <ExistingPicker listId={id} existing={sources} onClose={close} onAdded={saved} /> : null}
+        {open === "find" && sources.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            Or fill it from{" "}
+            <button type="button" className="underline hover:text-foreground" onClick={() => setAdding("linkedin")}>LinkedIn engagement</button>,{" "}
+            <button type="button" className="underline hover:text-foreground" onClick={() => setAdding("salesnav")}>a Sales Navigator list</button>, or{" "}
+            <button type="button" className="underline hover:text-foreground" onClick={() => setAdding("existing")}>one you already have</button>.
+          </p>
+        ) : null}
       </div>
 
       <section className="flex flex-col border-t border-border">
-        <div className="flex h-12 items-center gap-3 border-b border-border px-6">
-          <h2 className="card-title">People</h2>
+        <div className="flex min-h-12 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-6 py-2">
+          <h2 className="card-title">Leads</h2>
           <span className="data text-[0.8125rem] text-muted-foreground">
             {list.member_count.toLocaleString()} · {list.verified_count.toLocaleString()} with a verified email
           </span>
+          <label className="ml-auto flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Emails looked up a day</span>
+            <input
+              aria-label="Emails looked up a day"
+              inputMode="numeric"
+              value={cap}
+              onChange={(e) => setCap(e.target.value.replace(/[^0-9]/g, ""))}
+              onBlur={() => void saveCap()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveCap();
+              }}
+              placeholder={cap_from === "consumers" ? `${list.effective_daily_cap} (campaigns)` : "None"}
+              className="input data h-7 w-28 text-sm"
+            />
+            {lookups ? <span className="data text-xs text-muted-foreground">{list.lookups_today} today</span> : null}
+          </label>
         </div>
+        {!lookups && list.member_count > list.verified_count ? (
+          <p className="border-b border-border bg-muted px-6 py-2 text-xs text-muted-foreground">
+            Emails aren't looked up on their own. Set how many a day above, or let a campaign read this list.
+          </p>
+        ) : null}
+        {consumers.length ? (
+          <p className="border-b border-border px-6 py-2 text-xs text-muted-foreground">
+            Read by {consumers.map((k) => `${k.name} (${k.daily} a day)`).join(", ")}
+            {cap_from === "consumers" ? ". With no number of its own, it looks up what they take." : "."}
+          </p>
+        ) : null}
         {members && members.members.length === 0 ? (
-          <Empty title="Nobody here yet" hint="People join as its searches and signals find them, or add them from Leads." />
+          <Empty title="No leads yet" hint="They join as its searches find them. You can also select leads on the Leads page and add them here." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -580,21 +736,22 @@ export function ListDetail() {
                   <th className={TH}>Company</th>
                   <th className={TH}>Email</th>
                   <th className={TH}>Status</th>
-                  <th className={`${TH} pr-6`}>Joined</th>
+                  <th className={TH}>Why</th>
+                  <th className={`${TH} pr-6`}>Found by</th>
                 </tr>
               </thead>
               <tbody>
                 {(members?.members ?? []).map((m) => (
-                  <tr key={m.id} className="h-11 border-b border-border hover:bg-muted">
-                    <td className="px-4 py-2 pl-6">
+                  <tr key={m.id} className="border-b border-border align-top hover:bg-muted">
+                    <td className="px-4 py-2.5 pl-6">
                       <div className="font-medium">{m.full_name || (isInbox(m.email) ? <span className="text-muted-foreground">Company inbox</span> : <span className="text-faint">Unnamed</span>)}</div>
                       {m.title ? <div className="text-xs text-muted-foreground">{m.title}</div> : null}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       <div>{m.company || <span className="text-faint">Unknown</span>}</div>
                       {m.domain ? <div className="text-xs text-muted-foreground">{m.domain}</div> : null}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       {m.email ? (
                         <span className="flex items-center gap-1.5">
                           <a href={`mailto:${m.email}`} className="text-info hover:underline">{m.email}</a>
@@ -604,11 +761,26 @@ export function ListDetail() {
                         <span className="text-faint">None yet</span>
                       )}
                     </td>
-                    <td className="px-4 py-2">
-                      <StatusBadge lead={m} />
+                    <td className="whitespace-nowrap px-4 py-2.5">
+                      <MemberStatus member={m} lookups={lookups} />
                     </td>
-                    <td className="px-4 py-2 pr-6 text-muted-foreground">
-                      {ago(m.added_at)} <span className="text-faint">· {memberSource(m)}</span>
+                    <td className="max-w-xs px-4 py-2.5">
+                      {why(m) ? (
+                        <span className="line-clamp-2 text-xs text-muted-foreground" title={why(m)}>
+                          {why(m)}
+                        </span>
+                      ) : (
+                        <span className="block text-xs text-faint">No reason recorded</span>
+                      )}
+                      {m.source_url ? (
+                        <a href={m.source_url} target="_blank" rel="noreferrer noopener" className="mt-0.5 flex w-fit items-center gap-1 text-xs text-muted-foreground underline hover:text-foreground">
+                          Evidence <ExternalLink size={11} aria-hidden />
+                        </a>
+                      ) : null}
+                    </td>
+                    <td className="max-w-[14rem] px-4 py-2.5 pr-6 text-xs text-muted-foreground">
+                      <div className="truncate" title={foundBy(m)}>{foundBy(m)}</div>
+                      <div className="text-faint">{ago(m.added_at)}</div>
                     </td>
                   </tr>
                 ))}
@@ -631,14 +803,14 @@ export function ListDetail() {
         open={deleting}
         onOpenChange={setDeleting}
         title={`Delete ${list.name}?`}
-        description="The list and its settings go. The people stay in Leads, and campaigns reading it stop getting new people."
+        description="The list and its settings go. Its searches stay, as do its leads in Leads, and campaigns reading it stop getting new leads."
         submitLabel="Delete list"
         danger
         onSubmit={() =>
           void (async () => {
             try {
               await api.deleteList(id);
-              navigate("/lists");
+              navigate("/");
             } catch (e) {
               setDeleting(false);
               setNotice({ tone: "danger", text: (e as Error).message });
@@ -676,6 +848,36 @@ export function AddToList({ leadIds, onDone }: { leadIds: string[]; onDone: (tex
             `Added ${added} to ${name}.${skipped ? ` ${skipped} ${skipped === 1 ? "was" : "were"} already in it.` : ""}`,
             "success",
           );
+        } catch (e) {
+          onDone((e as Error).message, "danger");
+        }
+      }}
+    />
+  );
+}
+
+/** To review: put a search that feeds no list into one, so what it finds joins it from now on. */
+export function PutInList({ monitorId, onDone }: { monitorId: string; onDone: (text: string, tone: "success" | "danger") => void }) {
+  const [lists, setLists] = useState<ProspectList[]>([]);
+  useEffect(() => {
+    api
+      .lists(1, 100)
+      .then((r) => setLists(r.lists))
+      .catch(() => setLists([]));
+  }, []);
+  return (
+    <Picker
+      kind="view"
+      label="Add to a list"
+      placeholder="Add to a list"
+      value=""
+      empty="No lists yet. Create one on the Lists page."
+      options={lists.map((l) => ({ value: l.id, label: l.name }))}
+      onChange={async (listId) => {
+        try {
+          const r = await api.addListSource(listId, "signal", monitorId);
+          const name = lists.find((l) => l.id === listId)?.name ?? "the list";
+          onDone(addedMessage(r.added, r.searching, r.contacts).replace("Added.", `Added to ${name}.`).replace("this list", name), "success");
         } catch (e) {
           onDone((e as Error).message, "danger");
         }
