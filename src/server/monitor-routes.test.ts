@@ -568,13 +568,30 @@ describe("a repeat on a day and time, and the results email", () => {
     expect(sent[0].instruction).toContain(`to ${me}`);
     expect(sent[0].instruction).toContain('subject "Agency mentions: 1 new company"');
     expect(sent[0].instruction).not.toContain("SGM Magnetics");
-    expect(sent[0].payload.body).toContain("SGM Magnetics (sgmmagnetics.com): Recent coverage");
-    expect(sent[0].payload.body).toContain(companyFinding.source_url);
-    expect(sent[0].payload.body).toContain("https://prospector.example");
+    expect(sent[0].payload.body).toContain("SGM Magnetics");
+    expect(sent[0].payload.body).toContain("sgmmagnetics.com");
+    expect(sent[0].payload.body).toContain(companyFinding.reason);
+    // Results only: no evidence links or coverage notes.
+    expect(sent[0].payload.body).not.toContain(companyFinding.source_url);
+    expect(sent[0].payload.body).not.toContain("Checked one post");
+    expect(sent[0].payload.body).toContain('href="https://prospector.example"');
+    // The sender turns newlines into <br>, so the HTML is one line.
+    expect(sent[0].payload.body).not.toContain("\n");
     expect(sent[0].idempotency_key).toBe(`monitor-report:${check.id}`);
     // A finished check can't be finished again, so it never sends twice.
     expect((await request(`/api/monitor-checks/${check.id}`, "PATCH", { status: "done", coverage: "again" })).status).toBe(409);
     expect(tasks()).toHaveLength(1);
+  });
+  it("escapes what the agent read on outside websites", async () => {
+    const id = crypto.randomUUID();
+    await as(me, "/api/monitors", "POST", { id, ...weekly, report_to: me });
+    const check = await begin(id);
+    await record(check.id, [{ ...companyFinding, subject: { ...companyFinding.subject, name: "<img src=x onerror=alert(1)>Evil" }, reason: '<a href="https://phish.example">Click</a>' }]);
+    await finish(check.id);
+    const body = tasks()[0].payload.body;
+    expect(body).not.toContain("<img");
+    expect(body).not.toContain('<a href="https://phish.example"');
+    expect(body).toContain("&lt;img src=x onerror=alert(1)&gt;Evil");
   });
   it("says when a run did not finish, and sends nothing when the email is off", async () => {
     const id = crypto.randomUUID();
