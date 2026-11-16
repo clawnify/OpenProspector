@@ -209,6 +209,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  me: () => req<{ email: string | null }>("/api/me"),
   signalAgents: (page = 1) => req<{ servers: AgentServer[]; page: { has_more: boolean }; selected: string | null }>(`/api/signal-agents?page=${page}`),
   /** `unlisted`: only the signals that feed no list (To review). */
   monitors: (page = 1, unlisted = false) =>

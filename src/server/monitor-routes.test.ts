@@ -489,3 +489,111 @@ describe("new findings per check", () => {
     expect((await request("/api/monitors", "POST", { id, ...cfg })).status).toBe(201);
   });
 });
+
+describe("a repeat on a day and time, and the results email", () => {
+  const me = "melanie@agency.example";
+  async function as(email: string | null, path: string, method: string, body: unknown) {
+    const headers: Record<string, string> = { "content-type": "application/json", ...(email ? { "X-Clawnify-User-Email": email, "X-Clawnify-User-Id": crypto.randomUUID(), "X-Clawnify-Caller": "user" } : {}) };
+    const response = await monitorRoutes.request(`https://prospector.example${path}`, { method, headers, body: JSON.stringify(body) }, env);
+    return { status: response.status, body: await response.json() as any };
+  }
+  const weekly = { ...cfg, ...customConfig, finds: "companies" as const, frequency: "weekly" as const, day: 1, time: "08:00", tz: "Europe/Amsterdam" };
+  const scheduleBodies = () => external.mock.calls.filter(([url]) => url.includes("/schedules")).map(([, init]) => JSON.parse(init.body));
+  const tasks = () => external.mock.calls.filter(([url]) => url.endsWith("/tasks")).map(([, init]) => JSON.parse(init.body));
+
+  it("schedules a weekly search on its weekday and time, in its time zone", async () => {
+    await create(weekly);
+    expect(scheduleBodies()[0].trigger).toEqual({ kind: "cron", expr: "0 8 * * 1", tz: "Europe/Amsterdam" });
+  });
+  it("schedules a daily search at its time on every day", async () => {
+    const { day: _, ...daily } = weekly;
+    await create({ ...daily, frequency: "daily", time: "17:30" });
+    expect(scheduleBodies()[0].trigger).toEqual({ kind: "cron", expr: "30 17 * * *", tz: "Europe/Amsterdam" });
+  });
+  it("rejects a day and time that don't fit the repeat", () => {
+    expect(MonitorInput.safeParse({ ...weekly, day: undefined }).success).toBe(false);
+    expect(MonitorInput.safeParse({ ...weekly, tz: undefined }).success).toBe(false);
+    expect(MonitorInput.safeParse({ ...weekly, tz: "Mars/Olympus" }).success).toBe(false);
+    expect(MonitorInput.safeParse({ ...weekly, time: "8:00" }).success).toBe(false);
+    expect(MonitorInput.safeParse({ ...weekly, frequency: "once" }).success).toBe(false);
+    expect(MonitorInput.safeParse({ ...weekly, frequency: "daily" }).success).toBe(false);
+  });
+  it("moves an existing schedule to the chosen day when the search is edited", async () => {
+    const { day: _d, time: _t, tz: _z, ...old } = weekly;
+    const id = await create(old);
+    expect(scheduleBodies()[0].trigger).toEqual({ kind: "every", every_ms: 604800000 });
+    const r = await request(`/api/monitors/${id}`, "PUT", { request_id: crypto.randomUUID(), name: old.name, server_id: serverId, frequency: "weekly", day: 1, time: "08:00", tz: "Europe/Amsterdam", ends_at: null, max_per_check: 25 });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(scheduleBodies().at(-1).trigger).toEqual({ kind: "cron", expr: "0 8 * * 1", tz: "Europe/Amsterdam" });
+    // Left out of the next edit, the day and time are turned off, back to repeating from the save.
+    await request(`/api/monitors/${id}`, "PUT", { request_id: crypto.randomUUID(), name: old.name, server_id: serverId, frequency: "weekly", ends_at: null, max_per_check: 25 });
+    expect(scheduleBodies().at(-1).trigger).toEqual({ kind: "every", every_ms: 604800000 });
+  });
+  it("skips the off week of a two-weekly search, but not a retry of its claim", async () => {
+    const id = await create({ ...weekly, frequency: "biweekly" });
+    const first = await begin(id);
+    await finish(first.id);
+    expect((await request(`/api/monitors/${id}/checks`, "POST", { id: crypto.randomUUID() })).status).toBe(409);
+    expect((await request(`/api/monitors/${id}/checks`, "POST", { id: first.id })).status).toBe(200);
+    db.prepare("UPDATE signal_checks SET created_at = datetime('now', '-11 days')").run();
+    expect((await request(`/api/monitors/${id}/checks`, "POST", { id: crypto.randomUUID() })).status).toBe(200);
+  });
+  it("runs a failed two-weekly search again the next week", async () => {
+    const id = await create({ ...weekly, frequency: "biweekly" });
+    await finish((await begin(id)).id, "failed");
+    expect((await request(`/api/monitors/${id}/checks`, "POST", { id: crypto.randomUUID() })).status).toBe(200);
+  });
+  it("emails only the person who turns it on", async () => {
+    expect((await as(null, "/api/monitors", "POST", { id: crypto.randomUUID(), ...weekly, report_to: me })).status).toBe(400);
+    expect((await as("fabian@agency.example", "/api/monitors", "POST", { id: crypto.randomUUID(), ...weekly, report_to: me })).status).toBe(400);
+    const id = crypto.randomUUID();
+    expect((await as(me, "/api/monitors", "POST", { id, ...weekly, report_to: me.toUpperCase() })).status).toBe(201);
+    // A retry by someone else replays the saved create.
+    expect((await as(null, "/api/monitors", "POST", { id, ...weekly, report_to: me })).status).toBe(201);
+    const edit = { request_id: crypto.randomUUID(), name: weekly.name, server_id: serverId, frequency: "weekly", day: 1, time: "08:00", tz: "Europe/Amsterdam", ends_at: null, max_per_check: 25 };
+    // Another member can keep the recipient or turn it off, never name someone else.
+    expect((await as("fabian@agency.example", `/api/monitors/${id}`, "PUT", { ...edit, report_to: me })).status).toBe(200);
+    expect((await as("fabian@agency.example", `/api/monitors/${id}`, "PUT", { ...edit, request_id: crypto.randomUUID(), report_to: "someone@else.example" })).status).toBe(400);
+    expect((await as("fabian@agency.example", `/api/monitors/${id}`, "PUT", { ...edit, request_id: crypto.randomUUID(), report_to: null })).status).toBe(200);
+    expect((await request(`/api/monitors/${id}`)).body.monitor.report_to).toBeNull();
+  });
+  it("hands the agent one email per finished run, its findings in the payload", async () => {
+    const id = crypto.randomUUID();
+    expect((await as(me, "/api/monitors", "POST", { id, ...weekly, report_to: me, include_existing: true })).status).toBe(201);
+    const check = await begin(id);
+    expect((await record(check.id, [companyFinding])).status).toBe(200);
+    await finish(check.id);
+    const sent = tasks();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].instruction).toContain(`to ${me}`);
+    expect(sent[0].instruction).toContain('subject "Agency mentions: 1 new company"');
+    expect(sent[0].instruction).not.toContain("SGM Magnetics");
+    expect(sent[0].payload.body).toContain("SGM Magnetics (sgmmagnetics.com): Recent coverage");
+    expect(sent[0].payload.body).toContain(companyFinding.source_url);
+    expect(sent[0].payload.body).toContain("https://prospector.example");
+    expect(sent[0].idempotency_key).toBe(`monitor-report:${check.id}`);
+    // A finished check can't be finished again, so it never sends twice.
+    expect((await request(`/api/monitor-checks/${check.id}`, "PATCH", { status: "done", coverage: "again" })).status).toBe(409);
+    expect(tasks()).toHaveLength(1);
+  });
+  it("says when a run did not finish, and sends nothing when the email is off", async () => {
+    const id = crypto.randomUUID();
+    await as(me, "/api/monitors", "POST", { id, ...weekly, report_to: me });
+    await finish((await begin(id)).id, "failed");
+    expect(tasks()[0].instruction).toContain("this run did not finish");
+    expect(tasks()[0].payload.body).toContain("Login required");
+    const quiet = await create(weekly);
+    await finish((await begin(quiet)).id);
+    expect(tasks()).toHaveLength(1);
+  });
+  it("keeps the run and says on it when the email could not be handed over", async () => {
+    const id = crypto.randomUUID();
+    await as(me, "/api/monitors", "POST", { id, ...weekly, report_to: me });
+    const check = await begin(id);
+    external.mockImplementationOnce(async () => Response.json({ error: "Agent unavailable" }, { status: 400 }));
+    await finish(check.id);
+    const saved = (await request(`/api/monitor-checks/${check.id}`)).body.check;
+    expect(saved.status).toBe("done");
+    expect(saved.error).toMatch(/^The results email was not sent/);
+  });
+});

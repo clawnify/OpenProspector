@@ -61,6 +61,58 @@ function RepeatField({ value, onChange }: { value: string; onChange: (value: Mon
   </div>;
 }
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0].map(d => ({ value: String(d), label: WEEKDAYS[d] }));
+/** The viewer's time zone, which a new day and time are saved in. */
+function browserZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
+
+/** When a repeating search runs. What the fields hold, before it is checked. */
+interface When { day: string; time: string; tz: string }
+/** A new search runs on Monday mornings unless you choose otherwise. */
+const DEFAULT_WHEN = (): When => ({ day: "1", time: "08:00", tz: browserZone() });
+/** The day, time and zone to save: none on a search that runs once, or one saved before it could choose that still has no time. */
+function whenFields(frequency: MonitorConfig["frequency"], when: When): Pick<MonitorConfig, "day" | "time" | "tz"> {
+  if (frequency === "once" || !when.time) return {};
+  return { time: when.time, tz: when.tz, ...(frequency === "daily" ? {} : { day: Number(when.day) }) };
+}
+
+function WhenField({ frequency, value, onChange }: { frequency: MonitorConfig["frequency"]; value: When; onChange: (value: When) => void }) {
+  if (frequency === "once") return null;
+  const weekly = frequency !== "daily";
+  return <div className="text-sm">
+    <div className={`grid gap-4 ${weekly ? "sm:grid-cols-2" : ""}`}>
+      {weekly && <div className="block">On
+        <Picker label="Day" value={value.day} options={DAY_OPTIONS} onChange={day => onChange({ ...value, day })} className="mt-1 w-full" />
+      </div>}
+      <label className="block">At
+        <input type="time" className="input data mt-1 w-full" value={value.time} onChange={e => onChange({ ...value, time: e.target.value })} />
+      </label>
+    </div>
+    <span className="mt-1 block text-xs text-muted-foreground">
+      {value.time ? `Your agent starts it then, ${value.tz} time.${frequency === "biweekly" ? " It skips its day when it ran in the last 10 days, Run now included." : ""}` :"No time set: it repeats from when it was saved. Choose a time to run it on a fixed day."}
+    </span>
+  </div>;
+}
+
+/** The signed-in person's address, the only one a search can email. */
+function useMyEmail() {
+  const [email, setEmail] = useState<string | null>(null);
+  useEffect(() => { let live = true; void api.me().then(r => { if (live) setEmail(r.email); }).catch(() => {}); return () => { live = false; }; }, []);
+  return email;
+}
+
+/** Whether each run emails its results, and to whom: you, or whoever already gets them. */
+function EmailField({ checked, onChange, to }: { checked: boolean; onChange: (checked: boolean) => void; to: string | null }) {
+  return <label className="flex items-start gap-2 text-sm">
+    <input className="mt-1 accent-primary" type="checkbox" checked={checked} disabled={!to} onChange={e => onChange(e.target.checked)} />
+    <span>Email the results after each run
+      <span className="mt-0.5 block text-xs text-muted-foreground">{!to ? "Open Prospector signed in to get the results by email." : checked ? `Your agent emails ${to} what each run found, or why it didn't finish.` : `To ${to}. What it finds still joins the list either way.`}</span>
+    </span>
+  </label>;
+}
+
 function MaxField({ kind, finds, value, onChange }: { kind: MonitorKind; finds?: MonitorConfig["finds"]; value: string; onChange: (value: string) => void }) {
   const what = kind !== "custom" || finds === "people" ? "new people" : finds === "companies" ? "new companies" : "new findings";
   return <label className="block text-sm">At most
@@ -157,6 +209,9 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
   const [icp, setIcp] = useState("");
   const [serverId, setServerId] = useState("");
   const [frequency, setFrequency] = useState<MonitorConfig["frequency"]>("weekly");
+  const [when, setWhen] = useState<When>(DEFAULT_WHEN);
+  const myEmail = useMyEmail();
+  const [emailResults, setEmailResults] = useState(false);
   const [includeExisting, setIncludeExisting] = useState(true);
   const [ends, setEnds] = useState("");
   const [max, setMax] = useState(String(DEFAULT_MAX));
@@ -181,7 +236,7 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
     if (!request.current) {
       if (ends && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
       const companies = custom && finds === "companies";
-      const parsed = MonitorInput.safeParse({ name: name.trim() || source.trim().split("\n")[0].slice(0, 100), kind, source, icp, server_id: serverId, frequency, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max), who_to_contact: companies ? who : "",
+      const parsed = MonitorInput.safeParse({ name: name.trim() || source.trim().split("\n")[0].slice(0, 100), kind, source, icp, server_id: serverId, frequency, ...whenFields(frequency, when), report_to: emailResults && myEmail ? myEmail : null, include_existing: includeExisting, ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, max_per_check: Number(max), who_to_contact: companies ? who : "",
         ...(custom ? { finds, ...(companies ? { find_contacts: contacts } : {}) } : {}) });
       if (!parsed.success) { setError(parsed.error.issues.map(i => (i.path[0] === "server_id" ? "Choose the agent that runs it." : i.message)).join(" ")); return; }
       request.current = { id: crypto.randomUUID(), checkId: crypto.randomUUID(), config: parsed.data };
@@ -224,6 +279,8 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
           <RepeatField value={frequency} onChange={setFrequency} />
           <MaxField kind={kind} finds={custom ? finds : undefined} value={max} onChange={setMax} />
         </div>
+        <WhenField frequency={frequency} value={when} onChange={setWhen} />
+        <EmailField checked={emailResults} onChange={setEmailResults} to={myEmail} />
         {pickAgent && <AgentField value={serverId} onChange={setServerId} list={agentList} />}
         <button type="button" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground" aria-expanded={more} onClick={() => setMore(v => !v)}>
           {more ? <ChevronDown size={14} /> : <ChevronRight size={14} />}More settings
@@ -259,6 +316,10 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   const [icp, setIcp] = useState(m.icp);
   const [serverId, setServerId] = useState(m.server_id);
   const [frequency, setFrequency] = useState(m.frequency);
+  // Saved before it could choose: no time until one is picked, so it keeps its repeat.
+  const [when, setWhen] = useState<When>(() => m.time ? { day: String(m.day ?? 1), time: m.time, tz: m.tz ?? browserZone() } : { ...DEFAULT_WHEN(), time: "" });
+  const myEmail = useMyEmail();
+  const [emailResults, setEmailResults] = useState(Boolean(m.report_to));
   const [ends, setEnds] = useState(localInput(m.ends_at));
   const [max, setMax] = useState(String(m.max_per_check));
   const [who, setWho] = useState(m.who_to_contact);
@@ -272,7 +333,8 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
   async function submit() {
     setError(null);
     if (ends && frequency !== "once" && !Number.isFinite(Date.parse(ends))) { setError("Choose a valid end date."); return; }
-    const parsed = MonitorEdit.safeParse({ name, icp, server_id: serverId, frequency, max_per_check: Number(max), who_to_contact: who,
+    const parsed = MonitorEdit.safeParse({ name, icp, server_id: serverId, frequency, ...whenFields(frequency, when),
+      report_to: emailResults ? (m.report_to ?? myEmail) : null, max_per_check: Number(max), who_to_contact: who,
       ends_at: ends && frequency !== "once" ? new Date(ends).toISOString() : null, ...(custom ? { source } : {}), ...(companies ? { find_contacts: contacts } : {}) });
     if (!parsed.success) { setError(parsed.error.issues.map(i => i.message).join(" ")); return; }
     const body = JSON.stringify(parsed.data);
@@ -298,10 +360,12 @@ export function EditMonitor({ monitor: m, open, onOpenChange, onSaved }: { monit
     </>}
     <AgentField value={serverId} onChange={setServerId} list={agentList} />
     <RepeatField value={frequency} onChange={setFrequency} />
+    <WhenField frequency={frequency} value={when} onChange={setWhen} />
     {frequency !== "once" && <label className="block text-sm">Stop after (optional, your local time)
       <input type="datetime-local" className="input mt-1 w-full" value={ends} onChange={e => setEnds(e.target.value)} />
     </label>}
     <MaxField kind={m.kind} finds={m.finds} value={max} onChange={setMax} />
+    <EmailField checked={emailResults} onChange={setEmailResults} to={m.report_to ?? myEmail} />
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </Dialog>;
 }
@@ -311,8 +375,15 @@ export function signalSummary(m: Monitor): string {
   const what = m.kind === "custom"
     ? m.finds === "people" ? "Finds people" : m.finds === "companies" ? "Finds companies" : "Finds companies or people"
     : `LinkedIn: ${MONITOR_TEMPLATES.find(t => t.id === m.kind)?.title ?? "engagement"}`;
-  return [what, REPEAT_LABELS[m.frequency] ?? m.frequency, `up to ${m.max_per_check} a run`, findsContacts(m) ? "finds who to contact" : null]
+  return [what, repeatLabel(m), `up to ${m.max_per_check} a run`, findsContacts(m) ? "finds who to contact" : null, m.report_to ? "emails the results" : null]
     .filter(Boolean).join(" · ");
+}
+
+/** How often and, when it has one, on which day and at what time: "Every week on Monday at 08:00". */
+export function repeatLabel(m: Pick<Monitor, "frequency" | "day" | "time">): string {
+  const base = REPEAT_LABELS[m.frequency] ?? m.frequency;
+  if (m.frequency === "once" || !m.time) return base;
+  return `${base}${m.frequency !== "daily" && m.day !== undefined ? ` on ${WEEKDAYS[m.day]}` : ""} at ${m.time}`;
 }
 
 /** Where a signal stands, in one line, and how loud to say it. */
@@ -324,6 +395,8 @@ export function signalStatus(m: Monitor): { text: string; tone: "neutral" | "war
   if (!last) return { text: "Not run yet", tone: "neutral" };
   if (last.status === "sourcing") return { text: "Running now", tone: "neutral" };
   if (last.status === "failed") return { text: `Last run ${ago(last.updated_at)} failed${last.error ? `: ${last.error.replace(/[.\s]+$/, "")}` : ""}`, tone: "danger" };
+  // A finished run keeps an error only when its results email could not be sent.
+  if (last.error) return { text: `Last run ${ago(last.updated_at)}. ${last.error}`, tone: "warning" };
   return { text: `Last run ${ago(last.updated_at)}`, tone: "neutral" };
 }
 
