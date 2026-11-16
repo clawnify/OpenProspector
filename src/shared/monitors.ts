@@ -20,6 +20,11 @@ export function linkedinUrl(value: string, kind: "profile" | "post"): boolean {
   } catch { return false; }
 }
 
+/** An IANA time zone this runtime knows, such as Europe/Amsterdam. */
+export function knownTimeZone(value: string): boolean {
+  try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; } catch { return false; }
+}
+
 export const MonitorInput = z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(["own", "team", "post", "query", "custom"]),
@@ -27,6 +32,16 @@ export const MonitorInput = z.object({
   icp: z.string().trim().max(1000).default(""),
   server_id: z.string().uuid(),
   frequency: z.enum(["once", "daily", "weekly", "biweekly"]),
+  /**
+   * When a repeating search runs: the time of day in `tz`, and for a weekly
+   * or two-weekly one the weekday (0 = Sunday). All three absent on a search
+   * saved before it could choose, which repeats from when it was saved.
+   */
+  day: z.number().int().min(0).max(6).optional(),
+  time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Choose a time such as 08:00.").optional(),
+  tz: z.string().max(100).refine(knownTimeZone, "Unknown time zone.").optional(),
+  /** Who gets an email after each run. Only the person saving it can put their own address here. */
+  report_to: z.string().trim().toLowerCase().email().max(254).nullable().optional(),
   include_existing: z.boolean(),
   ends_at: z.string().datetime().nullable(),
   /** New findings a check may record; the rest wait for the next check. */
@@ -51,6 +66,15 @@ export const MonitorInput = z.object({
     ctx.addIssue({ code: "custom", path: ["finds"], message: "Only a custom signal chooses what it finds: a LinkedIn signal finds people." });
   if (v.finds === "people" && v.find_contacts !== undefined)
     ctx.addIssue({ code: "custom", path: ["find_contacts"], message: "A signal that finds people has nobody else to look for." });
+  const timed = v.time !== undefined || v.tz !== undefined || v.day !== undefined;
+  if (timed && v.frequency === "once")
+    ctx.addIssue({ code: "custom", path: ["time"], message: "A search that runs once has no day or time to repeat on." });
+  else if (timed && (v.time === undefined || v.tz === undefined))
+    ctx.addIssue({ code: "custom", path: ["time"], message: "Choose a time and a time zone." });
+  else if (timed && v.frequency === "daily" && v.day !== undefined)
+    ctx.addIssue({ code: "custom", path: ["day"], message: "A daily search runs every day: leave the day out." });
+  else if (timed && v.frequency !== "daily" && v.day === undefined)
+    ctx.addIssue({ code: "custom", path: ["day"], message: "Choose the day of the week it runs." });
   const sources = v.source.split(/\s+/);
   if (v.kind === "post" && !linkedinUrl(v.source, "post"))
     ctx.addIssue({ code: "custom", path: ["source"], message: "Enter an HTTPS LinkedIn post URL or lnkd.in short link." });
@@ -70,7 +94,7 @@ export type MonitorConfig = z.infer<typeof MonitorInput>;
  * contact at the companies can change.
  */
 export const MonitorEdit = MonitorInput.innerType()
-  .pick({ name: true, icp: true, server_id: true, frequency: true, ends_at: true, max_per_check: true, who_to_contact: true, find_contacts: true })
+  .pick({ name: true, icp: true, server_id: true, frequency: true, day: true, time: true, tz: true, report_to: true, ends_at: true, max_per_check: true, who_to_contact: true, find_contacts: true })
   .extend({ source: MonitorInput.innerType().shape.source.optional() }).strict();
 export type MonitorEditInput = z.infer<typeof MonitorEdit>;
 export interface Monitor extends MonitorConfig {

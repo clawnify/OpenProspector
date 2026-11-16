@@ -1,9 +1,11 @@
-import { createApp, createRoute, z } from "@clawnify/app";
+import { createApp, createRoute, user, z } from "@clawnify/app";
+import type { Context } from "hono";
 import { createAgents, ClawnifyAgentsError, type AgentsEnv } from "@clawnify/agents";
 import { get, query, run } from "./db.js";
 import { MonitorEdit, MonitorInput, SignalObservationInput, linkedinUrl, type Monitor, type MonitorConfig, type Observation } from "../shared/monitors.js";
 import { normalizeDomain, normalizeUrl } from "./signals.js";
 import { signalBrief } from "./signal-brief.js";
+import { reportTask } from "./signal-report.js";
 import { afterJoin, joinFromSignal, listsFedBy } from "./lists.js";
 import { STALE_AFTER } from "./runs.js";
 import { companyOf, searchCompanies, type Company } from "./company-search.js";
@@ -17,6 +19,32 @@ const UUID = z.string().uuid();
 const Page = z.coerce.number().int().min(1).max(40000).default(1);
 const LIMIT = 25;
 const INTERVAL = { daily: 86400000, weekly: 604800000, biweekly: 1209600000 };
+/** A two-weekly search's schedule fires weekly; a check this recent makes it skip a week. */
+const BIWEEKLY_GAP_DAYS = 10;
+
+/**
+ * The native schedule's trigger. A search with a day and time runs on a cron in
+ * its own time zone. Cron has no "every other week", so a two-weekly one fires
+ * weekly and skips the week after a check (see the checks route). A search
+ * saved before it could choose keeps repeating from when it was saved.
+ */
+export function scheduleTrigger(cfg: MonitorConfig) {
+  if (cfg.frequency === "once") throw new Error("A search that runs once has no schedule.");
+  if (cfg.time === undefined || cfg.tz === undefined) return { kind: "every" as const, every_ms: INTERVAL[cfg.frequency] };
+  const [hour, minute] = cfg.time.split(":").map(Number);
+  return { kind: "cron" as const, expr: `${minute} ${hour} * * ${cfg.frequency === "daily" ? "*" : cfg.day}`, tz: cfg.tz };
+}
+
+/**
+ * Who may be named to get a search's email: nobody, whoever it already goes
+ * to, or the person saving it. An address someone types for another person
+ * would turn the agent into a mailer, so the app never accepts one.
+ */
+function checkRecipient(c: Context<Env>, wanted: string | null | undefined, current: string | null | undefined) {
+  if (!wanted || wanted === current) return;
+  if (wanted !== user(c)?.email?.trim().toLowerCase())
+    throw new InputError("The results can only be emailed to you. Ask the person who should get them to turn the email on.");
+}
 
 async function readMonitor(id: string) {
   const row = await get<MonitorRow>("SELECT * FROM signal_monitors WHERE id = ?", [UUID.parse(id)]);
@@ -113,6 +141,8 @@ monitorRoutes.get("/api/signal-agents", async c => {
   const selected = await get<{ server_id: string }>("SELECT server_id FROM agent_config WHERE id = 1");
   return c.json({ ...data, selected: selected?.server_id ?? null });
 });
+/** The signed-in person's address: the only one a search can email its results to. */
+monitorRoutes.get("/api/me", c => c.json({ email: user(c)?.email?.trim().toLowerCase() || null }));
 /** `?unlisted=true`: only the signals that feed no list, whose findings wait for a person (To review). */
 const UNLISTED = "NOT EXISTS (SELECT 1 FROM list_sources s WHERE s.kind = 'signal' AND s.source_id = %s)";
 const unlisted = (c: { req: { query: (k: string) => string | undefined } }, column: string) =>
@@ -128,6 +158,9 @@ monitorRoutes.post("/api/monitors", async c => {
   const { id, ...body } = z.object({ id: UUID }).passthrough().parse(await c.req.json());
   const cfg = MonitorInput.parse(body);
   if (cfg.ends_at && Date.parse(cfg.ends_at) <= Date.now()) throw new InputError("Choose an end date in the future.");
+  // A retry of a saved create replays it: the address was checked when it was first saved.
+  const saved = await get<MonitorRow>("SELECT * FROM signal_monitors WHERE id = ?", [id]);
+  checkRecipient(c, cfg.report_to, saved ? MonitorInput.parse(JSON.parse(saved.create_request)).report_to : null);
   const serialized = JSON.stringify(cfg);
   await run("INSERT INTO signal_monitors(id, config, create_request) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING", [id, serialized, serialized]);
   let row = await readMonitor(id);
@@ -138,7 +171,7 @@ monitorRoutes.post("/api/monitors", async c => {
     try {
       const result = await createAgents(c.env).schedules.create(cfg.server_id, {
         name: `OpenProspector: ${cfg.name}`,
-        trigger: { kind: "every", every_ms: INTERVAL[cfg.frequency] },
+        trigger: scheduleTrigger(cfg),
         text: signalBrief(new URL(c.req.url).origin, id, undefined, cfg.kind),
       }, { idempotencyKey: `openprospector-monitor:${id}` });
       await run("UPDATE signal_monitors SET schedule_id = ?, schedule_error = NULL WHERE id = ?", [result.schedule.id, id]);
@@ -189,7 +222,11 @@ monitorRoutes.put("/api/monitors/:id", async c => {
   const before = config(row);
   if (edit.source !== undefined && edit.source !== before.source && before.kind !== "custom")
     throw new InputError("What a signal watches can't change. Create another signal to watch something else.");
-  const next = MonitorInput.parse({ ...before, ...edit, source: edit.source ?? before.source });
+  // The edit carries the whole repeat (day, time, zone) and the email: one it
+  // leaves out is turned off, not kept from before.
+  const { day: _day, time: _time, tz: _tz, report_to: _report, ...kept } = before;
+  const next = MonitorInput.parse({ ...kept, ...edit, source: edit.source ?? before.source });
+  checkRecipient(c, next.report_to, before.report_to);
   if (next.ends_at && next.ends_at !== before.ends_at && Date.parse(next.ends_at) <= Date.now())
     throw new InputError("Choose an end date in the future.");
   const agents = createAgents(c.env);
@@ -206,13 +243,13 @@ monitorRoutes.put("/api/monitors/:id", async c => {
     await save(null);
     if (old) await agents.schedules.delete(before.server_id, old).catch(() => {}); // Paused already; a leftover never runs.
   } else if (old && next.server_id === before.server_id) {
-    await agents.schedules.update(before.server_id, old, { ...settings, trigger: { kind: "every", every_ms: INTERVAL[next.frequency] } });
+    await agents.schedules.update(before.server_id, old, { ...settings, trigger: scheduleTrigger(next) });
     await save(old);
   } else {
     if (old) await agents.schedules.pause(before.server_id, old);
     let created;
     try {
-      created = await agents.schedules.create(next.server_id, { ...settings, trigger: { kind: "every", every_ms: INTERVAL[next.frequency] } },
+      created = await agents.schedules.create(next.server_id, { ...settings, trigger: scheduleTrigger(next) },
         { idempotencyKey: `openprospector-monitor:${row.id}:${request_id}` });
     } catch (e) {
       if (old && row.active) await agents.schedules.resume(before.server_id, old).catch(async () => {
@@ -279,7 +316,19 @@ monitorRoutes.openapi(createRoute({ method: "get", path: "/api/monitors/{id}", t
 monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitors/{id}/checks", tags: ["Monitoring"],
   summary: "Claim a scheduled check before researching; 409/410 means stop", request: { params: IdParam,
     body: { content: { "application/json": { schema: z.object({ id: UUID }).strict() } } } }, responses: { 200: BeginResponse } }),
-  async c => c.json(await begin(await readMonitor(c.req.param("id")), c.req.valid("json").id, c.env), 200));
+  async c => {
+    const row = await readMonitor(c.req.param("id"));
+    const id = c.req.valid("json").id;
+    const cfg = config(row);
+    // Only the schedule claims checks here ("Run now" uses /run), so this is
+    // the off week of a two-weekly search, unless it is a retry of a claim.
+    if (cfg.frequency === "biweekly" && cfg.time !== undefined && !(await get("SELECT 1 FROM signal_checks WHERE id = ?", [id]))) {
+      const recent = await get("SELECT 1 FROM signal_checks WHERE monitor_id = ? AND status != 'failed' AND created_at > datetime('now', ?)",
+        [row.id, `-${BIWEEKLY_GAP_DAYS} days`]);
+      if (recent) throw new InputError("Not due: this search runs every 2 weeks and ran in the last week. Stop; nothing to do.", 409);
+    }
+    return c.json(await begin(row, id, c.env), 200);
+  });
 monitorRoutes.openapi(createRoute({ method: "get", path: "/api/monitor-checks/{id}", tags: ["Monitoring"],
   summary: "Read check progress; only sourcing checks accept findings", request: { params: IdParam }, responses: { 200: CheckResponse } }),
   async c => c.json({ check: await readCheck(c.req.param("id")) }, 200));
@@ -292,7 +341,21 @@ monitorRoutes.openapi(createRoute({ method: "patch", path: "/api/monitor-checks/
     if (check.status !== "sourcing") throw new InputError("Check is already finished or interrupted", 409);
     if (body.status === "done" && !body.coverage?.trim()) throw new InputError("Describe coverage before completing the check.");
     if (body.status === "failed" && !body.error?.trim()) throw new InputError("Explain why the check failed.");
-    await run("UPDATE signal_checks SET status = ?, coverage = ?, error = ?, updated_at = datetime('now') WHERE id = ? AND status = 'sourcing'", [body.status, body.coverage ?? check.coverage, body.error ?? "", check.id]);
+    const updated = await run("UPDATE signal_checks SET status = ?, coverage = ?, error = ?, updated_at = datetime('now') WHERE id = ? AND status = 'sourcing'", [body.status, body.coverage ?? check.coverage, body.error ?? "", check.id]);
+    // Sent once: only the request that finished the check gets here.
+    if (body.status !== "sourcing" && Number(updated.changes) > 0) {
+      const monitor = await readMonitor(check.monitor_id);
+      const cfg = config(monitor);
+      if (cfg.report_to) {
+        try {
+          const task = await reportTask(new URL(c.req.url).origin, { id: monitor.id, ...cfg }, await readCheck(check.id), cfg.report_to);
+          await createAgents(c.env).dispatch({ server_id: cfg.server_id, idempotency_key: `monitor-report:${check.id}`, ...task });
+        } catch (e) {
+          // The run still counts. Say on it that nobody was told, rather than fail the agent's report.
+          await run("UPDATE signal_checks SET error = ? WHERE id = ?", [`The results email was not sent: ${message(e)}`.slice(0, 1000), check.id]);
+        }
+      }
+    }
     return c.json({ check: await readCheck(check.id) }, 200);
   });
 monitorRoutes.openapi(createRoute({ method: "post", path: "/api/monitor-checks/{id}/observations", tags: ["Monitoring"],

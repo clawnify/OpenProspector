@@ -150,3 +150,24 @@ it("says where a signal stands in words", () => {
     .toMatchObject({ tone: "danger", text: expect.stringMatching(/failed: Login required$/) });
   expect(signalStatus(monitor({ schedule_error: "Agent offline" })).tone).toBe("danger");
 });
+
+it("says the day and time a search runs, and that it emails its results", () => {
+  expect(signalSummary(monitor({ frequency: "weekly", day: 1, time: "08:00", tz: "Europe/Amsterdam", report_to: "melanie@agency.example" })))
+    .toBe("Finds companies · Every week on Monday at 08:00 · up to 5 a run · finds who to contact · emails the results");
+  expect(signalSummary(monitor({ kind: "post", finds: undefined, find_contacts: undefined, frequency: "daily", time: "17:30", tz: "UTC" })))
+    .toBe("LinkedIn: Specific post · Every day at 17:30 · up to 5 a run");
+});
+
+it("asks when a new repeating search runs, Monday at 08:00 to start", () => {
+  const html = form("custom");
+  expect(html).toContain('type="time"');
+  expect(html).toContain('value="08:00"');
+  expect(html).toContain("Monday");
+  expect(html).toContain("Email the results after each run");
+});
+
+it("warns on a finished run whose results email was not sent", () => {
+  const m = monitor({ last_check: { id: "c1", status: "done", error: "The results email was not sent: Agent unavailable", updated_at: new Date().toISOString(), coverage: "x" } });
+  expect(signalStatus(m)).toMatchObject({ tone: "warning" });
+  expect(signalStatus(m).text).toContain("The results email was not sent");
+});
