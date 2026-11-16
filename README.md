@@ -372,7 +372,7 @@ Cached values expire after **90 days**. Contact data decays as people change job
 
 ## What This Deliberately Does Not Do
 
-**It does not send email.** No sequencer, no SMTP, no "enroll 20 leads" button — not even bring-your-own.
+**It does not email prospects.** No sequencer, no SMTP, no "enroll 20 leads" button — not even bring-your-own. The only email it sends is a search's results, to the person on your team who turned that on.
 
 That is a considered decision, not a missing feature. Cold-email sending at volume is a deliverability and compliance problem (CAN-SPAM, GDPR) that belongs in a tool you have configured, warmed, and are accountable for. OpenProspector's job ends at a verified, attributed contact record; export it to your CRM or your own sequencer and send from there.
 

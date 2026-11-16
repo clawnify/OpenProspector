@@ -13,8 +13,10 @@
 found and let the waterfall resolve them — it buys contact details far more
 cheaply than you can find them, and validates every one before delivery.
 
-**Never send email.** This app deliberately has no sending capability. Your job
-ends at a verified, attributed contact record.
+**Never email a prospect.** This app deliberately has no outreach capability. Your
+job ends at a verified, attributed contact record. The one email you send is a
+search's results, when the app hands you that task after a run: send it once,
+exactly as written, to the person in your organization the task names.
 
 ## Your main job: sourcing
 
