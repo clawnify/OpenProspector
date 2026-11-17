@@ -659,7 +659,9 @@ describe("every company adapter", () => {
       else stub(empty, empty, empty);
       const r = await p.enrich("nowhere.example", `${p.id}-empty:key`);
       expect(r.outcome, `${p.id} returned a hit for an empty body`).not.toBe("hit");
-      expect(r.creditsUsed, `${p.id} billed for an empty body`).toBe(0);
+      // CompanyEnrich bills the successful call, even if a malformed answer
+      // cannot be mapped. Keep that charge visible as an unmapped attempt.
+      expect(r.creditsUsed, `${p.id} unexpected empty-body charge`).toBe(p.id === "companyenrich-company" ? 1 : 0);
     }
   });
 
@@ -679,15 +681,14 @@ describe("every company adapter", () => {
     }
   });
 
-  it("gives every vendor a distinct id and reuses the person-side secret name", async () => {
+  it("gives every vendor a distinct id and shares a key when it also serves people", async () => {
     const ids = COMPANY_REGISTRY.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);
     const { REGISTRY } = await import("./index");
-    const personSecrets = new Set(REGISTRY.map((p) => p.secretName));
     for (const p of COMPANY_REGISTRY) {
-      // One key per vendor, entered once — a separate secret name would make
-      // the settings screen ask for the same key twice.
-      expect(personSecrets, `${p.id} introduces a second secret for one vendor`).toContain(p.secretName);
+      const person = REGISTRY.find((candidate) => candidate.label === p.label);
+      // A company-only vendor has no person entry to share a key with.
+      if (person) expect(p.secretName, `${p.id} introduces a second secret for one vendor`).toBe(person.secretName);
     }
   });
 });

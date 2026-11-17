@@ -35,6 +35,7 @@ import { secret, type ConnectionsEnv } from "@clawnify/connections";
 import type { CompanyProvider, CompanyRecord, EnrichAttempt } from "./types";
 import { ApolloCompanyProvider } from "./apollo";
 import { ContactOutCompanyProvider } from "./contactout";
+import { CompanyEnrichCompanyProvider } from "./companyenrich";
 import { DatagmaCompanyProvider } from "./datagma";
 import { FindymailCompanyProvider } from "./findymail";
 import { ForagerCompanyProvider } from "./forager";
@@ -67,6 +68,7 @@ export const COMPANY_REGISTRY: readonly CompanyProvider[] = [
   ContactOutCompanyProvider,
   SurfeCompanyProvider,
   SnovCompanyProvider,
+  CompanyEnrichCompanyProvider,
 ];
 
 /**
@@ -133,6 +135,9 @@ export const COMPANY_DEFAULT_ORDER: readonly string[] = [
   // charges per *request* rather than per match, so a miss costs a credit —
   // the exact opposite of the free-to-miss vendors near the top.
   "snov-company",
+  // A company-only key: keep the existing vendors' order and let users move
+  // this dedicated firmographic provider earlier when it is their preferred source.
+  "companyenrich-company",
 ];
 
 /**
