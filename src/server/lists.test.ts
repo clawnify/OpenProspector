@@ -338,6 +338,42 @@ describe("people at the companies a signal finds", () => {
     expect(found.search).toMatchObject({ status: "sourcing", lead_count: 1 });
   });
 
+  it("people the agent saves without naming a search go under their company's open search", async () => {
+    const list = await newList();
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${list.id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    await record((await beginCheck(monitor)).id, [bouwFinding, smitFinding]);
+
+    // One request, two companies, no run_id.
+    const saved = await ok("/api/leads", { method: "POST", body: { leads: [ana, jan, eva] }, headers: AGENT });
+    expect(saved).toMatchObject({ imported: 3, run_id: null });
+    expect([...saved.run_ids].sort()).toEqual([searchOf("bouw.nl").id, searchOf("smitbouw.nl").id].sort());
+    expect(row("SELECT run_id FROM leads WHERE full_name = 'Ana de Vries'").run_id).toBe(searchOf("bouw.nl").id);
+    expect(row("SELECT run_id FROM leads WHERE full_name = 'Jan Smit'").run_id).toBe(searchOf("smitbouw.nl").id);
+    // No search was opened for Eva's company: she stays a plain import.
+    expect(row("SELECT run_id FROM leads WHERE full_name = 'Eva Bakker'").run_id).toBeNull();
+    expect(searchOf("bouw.nl").lead_count).toBe(1);
+    expect(searchOf("smitbouw.nl").lead_count).toBe(1);
+    const { members } = await ok(`/api/lists/${list.id}/members`);
+    expect(members.map((m: any) => m.full_name).sort()).toEqual(["Ana de Vries", "Jan Smit"]);
+  });
+
+  it("a person's import, and the agent's once the search has finished, stay plain imports", async () => {
+    const monitor = await newMonitor(vansSignal);
+    await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: monitor } });
+    await record((await beginCheck(monitor)).id, [bouwFinding]);
+    const search = searchOf("bouw.nl");
+
+    const imported = await ok("/api/leads", { method: "POST", body: { leads: [ana] } });
+    expect(imported.run_ids).toBeUndefined();
+    expect(row("SELECT run_id FROM leads WHERE full_name = 'Ana de Vries'").run_id).toBeNull();
+
+    await ok(`/api/runs/${search.id}`, { method: "PATCH", body: { status: "done" }, headers: AGENT });
+    const later = await ok("/api/leads", { method: "POST", body: { leads: [{ ...jan, domain: "bouw.nl" }] }, headers: AGENT });
+    expect(later.run_ids).toBeUndefined();
+    expect(row("SELECT run_id FROM leads WHERE full_name = 'Jan Smit'").run_id).toBeNull();
+  });
+
   it("a company is searched once: another signal that finds it takes the people already found, with no second search", async () => {
     const first = await newMonitor(vansSignal);
     await ok(`/api/lists/${(await newList()).id}/sources`, { method: "POST", body: { kind: "signal", source_id: first } });

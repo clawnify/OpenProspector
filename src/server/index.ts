@@ -1068,7 +1068,9 @@ const importLeads = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            run_id: z.string().optional().openapi({ description: "Attach to an existing run" }),
+            run_id: z.string().optional().openapi({
+              description: "Attach to an existing run. An agent that leaves it out while the search it was handed for a lead's company is open has that lead saved under that search.",
+            }),
             leads: z
               .array(
                 z.object({
@@ -1102,7 +1104,18 @@ const importLeads = createRoute({
     },
   },
   responses: {
-    201: { description: "Imported", content: { "application/json": { schema: z.object({ imported: z.number().int(), run_id: z.string().nullable() }) } } },
+    201: {
+      description: "Imported",
+      content: {
+        "application/json": {
+          schema: z.object({
+            imported: z.number().int(),
+            run_id: z.string().nullable(),
+            run_ids: z.array(z.string()).optional().openapi({ description: "The open company searches the leads were saved under, when the request named no run_id" }),
+          }),
+        },
+      },
+    },
     400: { description: "Nothing importable", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1129,6 +1142,11 @@ app.openapi(importLeads, async (c) => {
 
   const runId = body.run_id ?? null;
   const rows = await dropListedAlready(runId, valid);
+  // An agent handed a company's search sometimes saves the people it found there
+  // without naming it. While that search is open they are its results: left
+  // loose, the search would show nobody and the lists it feeds would get no one.
+  const open = runId || caller(c) !== "agent" ? null : await openCompanySearches(rows.map((l) => bareDomain(l.domain)));
+  const runOf = (l: (typeof rows)[number]) => runId ?? open?.get(bareDomain(l.domain)) ?? null;
   // Ids up front, so the new leads can join the lists their search feeds.
   const ids = rows.map(() => crypto.randomUUID());
   // 11 params per row; chunked to stay under D1's 100-bound-parameter cap.
@@ -1137,7 +1155,7 @@ app.openapi(importLeads, async (c) => {
     const values = slice.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
     const params = slice.flatMap((l, j) => [
       ids[i + j],
-      runId,
+      runOf(l),
       (l.full_name || "").trim(),
       (l.title || "").trim(),
       (l.company || "").trim(),
@@ -1167,18 +1185,39 @@ app.openapi(importLeads, async (c) => {
     );
   }
 
-  if (runId) {
+  const bySearch = new Map<string, string[]>();
+  for (const [i, l] of rows.entries()) {
+    const search = runOf(l);
+    if (search) bySearch.set(search, [...(bySearch.get(search) ?? []), ids[i]]);
+  }
+  for (const [search, leadIds] of bySearch) {
     await run(
       "UPDATE runs SET lead_count = (SELECT COUNT(*) FROM leads WHERE run_id = ?), updated_at = datetime('now') WHERE id = ?",
-      [runId, runId],
+      [search, search],
     );
-    await touchBatch(runId);
+    await touchBatch(search);
     // The lists this search feeds take them in, and look up what their caps allow.
-    const grew = await joinFromRun(runId, ids);
+    const grew = await joinFromRun(search, leadIds);
     await afterJoin(c.env, new URL(c.req.url).origin, grew);
   }
-  return c.json({ imported: rows.length, run_id: runId }, 201);
+  return c.json({ imported: rows.length, run_id: runId, ...(open && bySearch.size ? { run_ids: [...bySearch.keys()] } : {}) }, 201);
 });
+
+/** The company search still open for each of these domains: handed to the agent and not finished. */
+async function openCompanySearches(domains: string[]): Promise<Map<string, string>> {
+  const wanted = [...new Set(domains.filter(Boolean))];
+  const open = new Map<string, string>();
+  // Chunked to stay under D1's 100-bound-parameter cap.
+  for (let i = 0; i < wanted.length; i += 50) {
+    const chunk = wanted.slice(i, i + 50);
+    const found = await query<{ id: string; company_domain: string }>(
+      `SELECT id, company_domain FROM runs WHERE status = 'sourcing' AND company_domain IN (${chunk.map(() => "?").join(",")})`,
+      chunk,
+    );
+    for (const r of found) open.set(r.company_domain, r.id);
+  }
+  return open;
+}
 
 type ImportedLead = {
   full_name?: string;
