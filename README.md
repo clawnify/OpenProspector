@@ -64,7 +64,8 @@ or two weeks, on the weekday and at the time you choose, in your own time zone.
 Tick "Email the results after each run" and the agent emails you what each run
 found, or why it didn't finish. It only ever emails the person who turned it on.
 The agent is the one named in Settings, or the only one there is;
-otherwise you choose it. The first run starts immediately. Recurring work uses that agent's native
+otherwise you choose it. A search with a day and time first runs then, unless you press Run now;
+one that runs once starts as soon as it is saved. Recurring work uses that agent's native
 scheduler, with the full versioned procedure embedded in its prompt; no skill
 installation on the agent is needed. The app must have access to the Clawnify
 agents API and the selected agent must support app-created schedule receipts.
