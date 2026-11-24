@@ -195,11 +195,30 @@ export function addedMessage(added: number, searching: number, contacts: boolean
   return `Added.${people}${companies}${waiting}`;
 }
 
+/** One attempt to add a new search to a list. A retry keeps both keys, so it never makes a second schedule or run. */
+export interface NewSearch { id: string; checkId: string; config: MonitorConfig; message?: string }
+
+/**
+ * Save a new search and add it to the list, so what it finds joins the list.
+ * One with a day and time waits for it. One with none starts its first run
+ * now: it runs once, or repeats from when it was saved, so the save is its
+ * time. Returns what to tell the person.
+ */
+export async function saveSearch(listId: string, r: NewSearch): Promise<string> {
+  await api.createMonitor(r.id, r.config);
+  if (r.message === undefined) {
+    const added = await api.addListSource(listId, "signal", r.id);
+    r.message = addedMessage(added.added, added.searching, added.contacts);
+  }
+  if (r.config.time !== undefined) return `${r.message} Its first run is ${whenLabel(r.config)}. Press Run now to start one sooner.`;
+  await api.runMonitor(r.id, r.checkId);
+  return `${r.message} Its first run has started; new leads join as they are found.`;
+}
+
 /**
  * A new signal, made inside a list: the list's first search reads as one
  * question (who should this list find, companies or people), and the rest
- * waits under More settings. Saved, then added to the list, then started, so
- * what its first run finds already joins the list.
+ * waits under More settings.
  */
 export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind: MonitorKind; listId: string; listName?: string; onClose: () => void; onSaved: (message: string) => void }) {
   const custom = kind === "custom";
@@ -224,7 +243,7 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
   const [busy, setBusy] = useState(false);
   // A lost response never rotates either key. A retry cannot mint another
   // native schedule or dispatch the same check twice.
-  const request = useRef<{ id: string; checkId: string; config: MonitorConfig; message?: string } | null>(null);
+  const request = useRef<NewSearch | null>(null);
   const [submitted, setSubmitted] = useState(false);
   useEffect(() => { if (agentList.selected) setServerId(previous => previous || agentList.selected!); }, [agentList.selected]);
   // The agent is chosen for you when Settings names one or there is only one.
@@ -243,17 +262,8 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
       setSubmitted(true);
     }
     setBusy(true);
-    try {
-      const r = request.current;
-      await api.createMonitor(r.id, r.config);
-      if (r.message === undefined) {
-        const added = await api.addListSource(listId, "signal", r.id);
-        r.message = addedMessage(added.added, added.searching, added.contacts);
-      }
-      // Start the first run now rather than making a weekly signal wait a week.
-      await api.runMonitor(r.id, r.checkId);
-      onSaved(`${r.message} Its first run has started; new leads join as they are found.`);
-    } catch (e) { setError((e as Error).message); window.dispatchEvent(new Event("monitors-changed")); }
+    try { onSaved(await saveSearch(listId, request.current)); }
+    catch (e) { setError((e as Error).message); window.dispatchEvent(new Event("monitors-changed")); }
     finally { setBusy(false); }
   }
   const prompt = custom ? FINDS[finds] : { label: template.label, placeholder: template.placeholder };
@@ -298,7 +308,7 @@ export function MonitorForm({ kind, listId, listName, onClose, onSaved }: { kind
       <p className="text-xs text-muted-foreground">{custom ? "What it finds joins this list. Emails are looked up only up to the list's daily number." : "Uses the agent’s logged-in LinkedIn browser. A run covers up to 10 posts and 100 accessible engagements. The people it finds join this list."}</p>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {submitted && error && <p className="text-xs text-muted-foreground">It may already be saved. Retry uses the same IDs, so it is never made twice.</p>}
-      <div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !agentList.ready}>{busy ? "Starting…" : submitted ? "Retry" : "Add to list"}</Button></div>
+      <div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button><Button type="submit" variant="primary" disabled={busy || !agentList.ready}>{busy ? (whenFields(frequency, when).time ? "Adding…" : "Starting…") : submitted ? "Retry" : "Add to list"}</Button></div>
     </form>
   </Card>;
 }
@@ -379,11 +389,16 @@ export function signalSummary(m: Monitor): string {
     .filter(Boolean).join(" · ");
 }
 
+/** The day and time of a search that has them: "on Monday at 08:00", or "at 08:00" for one that runs every day. */
+function whenLabel(m: Pick<MonitorConfig, "frequency" | "day" | "time">): string {
+  return `${m.frequency !== "daily" && m.day !== undefined ? `on ${WEEKDAYS[m.day]} ` : ""}at ${m.time}`;
+}
+
 /** How often and, when it has one, on which day and at what time: "Every week on Monday at 08:00". */
 export function repeatLabel(m: Pick<Monitor, "frequency" | "day" | "time">): string {
   const base = REPEAT_LABELS[m.frequency] ?? m.frequency;
   if (m.frequency === "once" || !m.time) return base;
-  return `${base}${m.frequency !== "daily" && m.day !== undefined ? ` on ${WEEKDAYS[m.day]}` : ""} at ${m.time}`;
+  return `${base} ${whenLabel(m)}`;
 }
 
 /** Where a signal stands, in one line, and how loud to say it. */

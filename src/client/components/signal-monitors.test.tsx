@@ -1,9 +1,10 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { ReviewRoute } from "../routes/review";
-import { ContactFields, MonitorForm, Finding, SignalRow, signalStatus, signalSummary } from "./signal-monitors";
-import { CustomObservationInput, findsContacts, type Monitor } from "../../shared/monitors";
+import { ContactFields, MonitorForm, Finding, SignalRow, saveSearch, signalStatus, signalSummary } from "./signal-monitors";
+import { CustomObservationInput, MonitorInput, findsContacts, type Monitor } from "../../shared/monitors";
+import { api } from "../api";
 
 const form = (kind: Parameters<typeof MonitorForm>[0]["kind"], listName?: string) =>
   renderToStaticMarkup(<MonitorForm kind={kind} listId="l1" listName={listName} onClose={() => {}} onSaved={() => {}} />);
@@ -170,4 +171,46 @@ it("warns on a finished run whose results email was not sent", () => {
   const m = monitor({ last_check: { id: "c1", status: "done", error: "The results email was not sent: Agent unavailable", updated_at: new Date().toISOString(), coverage: "x" } });
   expect(signalStatus(m)).toMatchObject({ tone: "warning" });
   expect(signalStatus(m).text).toContain("The results email was not sent");
+});
+
+afterEach(() => vi.restoreAllMocks());
+/** A new search as the form saves it, and the calls saving it makes. */
+function newSearch(over: Record<string, unknown>) {
+  const config = MonitorInput.parse({ name: "Amazon brands", kind: "custom", source: "Brands that sell on Amazon but not on Bol.", server_id: "46d3c39e-d490-433d-b27c-db7e2d6fd396",
+    include_existing: true, ends_at: null, finds: "companies", find_contacts: true, ...over });
+  vi.spyOn(api, "createMonitor").mockResolvedValue({ monitor: monitor() });
+  vi.spyOn(api, "addListSource").mockResolvedValue({ added: 0, searching: 0, contacts: true });
+  const run = vi.spyOn(api, "runMonitor").mockResolvedValue({ check: { id: "c1", status: "sourcing" } });
+  return { search: { id: "m1", checkId: "c1", config }, run };
+}
+
+it.each([
+  [{ frequency: "weekly", day: 1, time: "08:00", tz: "Europe/Amsterdam" }, "Added. Its first run is on Monday at 08:00. Press Run now to start one sooner."],
+  [{ frequency: "biweekly", day: 4, time: "17:30", tz: "Europe/Amsterdam" }, "Added. Its first run is on Thursday at 17:30. Press Run now to start one sooner."],
+  [{ frequency: "daily", time: "06:15", tz: "UTC" }, "Added. Its first run is at 06:15. Press Run now to start one sooner."],
+])("a new search with a day and time waits for it: %o", async (when, message) => {
+  const { search, run } = newSearch(when);
+  expect(await saveSearch("l1", search)).toBe(message);
+  expect(api.createMonitor).toHaveBeenCalledWith("m1", search.config);
+  expect(api.addListSource).toHaveBeenCalledWith("l1", "signal", "m1");
+  expect(run).not.toHaveBeenCalled();
+});
+
+it.each([
+  [{ frequency: "once" }],
+  // No time set: it repeats from when it was saved, so the save is its first run.
+  [{ frequency: "weekly" }],
+])("a new search with no day and time starts on save: %o", async when => {
+  const { search, run } = newSearch(when);
+  expect(await saveSearch("l1", search)).toBe("Added. Its first run has started; new leads join as they are found.");
+  expect(run).toHaveBeenCalledWith("m1", "c1");
+});
+
+it("a retry after a lost response adds the search to the list once", async () => {
+  const { search, run } = newSearch({ frequency: "once" });
+  run.mockRejectedValueOnce(new Error("Network error"));
+  await expect(saveSearch("l1", search)).rejects.toThrow("Network error");
+  await saveSearch("l1", search);
+  expect(api.addListSource).toHaveBeenCalledTimes(1);
+  expect(run).toHaveBeenCalledTimes(2);
 });
