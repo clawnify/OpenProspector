@@ -284,4 +284,6 @@ export interface CompanyProvider {
    * before calling, so adapters receive `acme.com`, never `https://www.acme.com/`.
    */
   enrich(domain: string, apiKey: string): Promise<CompanyResult>;
+  /** Free account balance lookup for a company-only vendor's settings row. */
+  credits?(apiKey: string): Promise<CreditBalance>;
 }

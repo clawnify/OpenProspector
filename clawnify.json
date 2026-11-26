@@ -63,7 +63,8 @@
       "FORAGER_API_KEY",
       "DROPCONTACT_API_KEY",
       "KASPR_API_KEY",
-      "ZELIQ_API_KEY"
+      "ZELIQ_API_KEY",
+      "COMPANYENRICH_API_KEY"
     ]
   }
 }
